@@ -3,6 +3,7 @@
 namespace Prism\Prism\Providers\OpenAI\Handlers;
 
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Http\Client\Response as ClientResponse;
 use Illuminate\Support\Arr;
 use Prism\Prism\Enums\StructuredMode;
@@ -49,7 +50,7 @@ class Structured
 
         $data = $response->json();
 
-        $this->handleRefusal(data_get($data, 'output.{last}.content.0', []));
+        $this->handleRefusal(data_get($data, 'output.{last}.content.0', []), $request, $response);
 
         $responseMessage = new AssistantMessage(
             data_get($data, 'output.{last}.content.0.text') ?? '',
@@ -121,7 +122,7 @@ class Structured
         return match ($mode) {
             StructuredMode::Structured => $this->handleStructuredMode($request),
             StructuredMode::Json => $this->handleJsonMode($request),
-            default => throw new PrismException('Could not determine structured mode for your request'),
+            default => throw (new PrismException('Could not determine structured mode for your request'))->setRequest($request),
         };
     }
 
@@ -130,7 +131,7 @@ class Structured
         $mode = StructuredModeResolver::forModel($request->model());
 
         if ($mode !== StructuredMode::Structured) {
-            throw new PrismException(sprintf('%s model does not support structured mode', $request->model()));
+            throw (new PrismException(sprintf('%s model does not support structured mode', $request->model())))->setRequest($request);
         }
 
         /** @var array{type: 'json_schema', name: string, schema: array<mixed>, strict?: bool} $responseFormat */
@@ -158,10 +159,32 @@ class Structured
     /**
      * @param  array<string, string>  $message
      */
-    protected function handleRefusal(array $message): void
+    protected function handleRefusal(array $message, Request $request, Response $response): void
     {
         if (data_get($message, 'type') === 'refusal') {
-            throw new PrismException(sprintf('OpenAI Refusal: %s', $message['refusal'] ?? 'Reason unknown.'));
+            $e = new PrismException(sprintf('OpenAI Refusal: %s', $message['refusal'] ?? 'Reason unknown.'));
+
+            try {
+                $data = $response->json();
+
+                $responseMessage = new AssistantMessage(
+                    data_get($data, 'output.{last}.content.0.text') ?? '',
+                );
+
+                $request->addMessage($responseMessage);
+
+                $this->addStep($data, $request, $response);
+
+                $structuredResponse = $this->responseBuilder->toResponse();
+
+                $e->setStructuredResponse($structuredResponse);
+            } catch (\Throwable) {
+                // If we fail to parse the response, we still want to throw the refusal exception.
+            }
+
+            $e->setRequest($request);
+            $e->setResponse($response);
+            throw $e;
         }
     }
 

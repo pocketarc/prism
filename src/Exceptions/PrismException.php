@@ -5,11 +5,56 @@ declare(strict_types=1);
 namespace Prism\Prism\Exceptions;
 
 use Exception;
+use Illuminate\Http\Client\Response;
+use Prism\Prism\Contracts\PrismRequest;
+use Prism\Prism\Structured\Response as StructuredResponse;
 use Prism\Prism\ValueObjects\ToolCall;
 use Throwable;
 
 class PrismException extends Exception
 {
+    protected PrismRequest $request;
+
+    protected Response $response;
+
+    protected StructuredResponse $structuredResponse;
+
+    public function setRequest(PrismRequest $request): static
+    {
+        $this->request = $request;
+
+        return $this;
+    }
+
+    public function setResponse(Response $response): static
+    {
+        $this->response = $response;
+
+        return $this;
+    }
+
+    public function setStructuredResponse(StructuredResponse $response): static
+    {
+        $this->structuredResponse = $response;
+
+        return $this;
+    }
+
+    public function getRequest(): PrismRequest
+    {
+        return $this->request;
+    }
+
+    public function getResponse(): Response
+    {
+        return $this->response;
+    }
+
+    public function getStructuredResponse(): StructuredResponse
+    {
+        return $this->structuredResponse;
+    }
+
     public static function promptOrMessages(): self
     {
         return new self('You can only use `prompt` or `messages`');
