@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Prism\Prism\Providers\OpenAI\Handlers;
 
+use Exception;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Arr;
 use Prism\Prism\Audio\AudioResponse;
@@ -27,10 +28,11 @@ class Audio
     {
         $mapper = new TextToSpeechRequestMapper($request);
 
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = $this->client->post('audio/speech', $mapper->toPayload());
 
         if (! $response->successful()) {
-            throw new \Exception('Failed to generate audio: '.$response->body());
+            throw new Exception('Failed to generate audio: '.$response->body());
         }
 
         $audioContent = $response->body();
@@ -45,6 +47,7 @@ class Audio
 
     public function handleSpeechToText(SpeechToTextRequest $request): TextResponse
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = $this
             ->client
             ->attach(
@@ -58,6 +61,7 @@ class Audio
                 'language' => $request->providerOptions('language') ?? null,
                 'prompt' => $request->providerOptions('prompt') ?? null,
                 'response_format' => $request->providerOptions('response_format') ?? null,
+                'service_tier' => $request->providerOptions('service_tier') ?? null,
                 'temperature' => $request->providerOptions('temperature') ?? null,
             ]));
 

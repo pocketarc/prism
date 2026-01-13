@@ -100,6 +100,7 @@ class Text
      */
     protected function sendRequest(Request $request): array
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = $this->client->post(
             'chat/completions',
             array_merge([
@@ -128,6 +129,7 @@ class Text
             finishReason: $this->mapFinishReason($data),
             toolCalls: ToolCallMap::map(data_get($data, 'choices.0.message.tool_calls', [])),
             toolResults: $toolResults,
+            providerToolCalls: [],
             usage: new Usage(
                 data_get($data, 'usage.prompt_tokens'),
                 data_get($data, 'usage.completion_tokens'),

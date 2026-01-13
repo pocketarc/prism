@@ -16,6 +16,7 @@ use Prism\Prism\Providers\OpenAI\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\OpenAI\Concerns\ProcessRateLimits;
 use Prism\Prism\Providers\OpenAI\Concerns\ValidatesResponse;
 use Prism\Prism\Providers\OpenAI\Maps\MessageMap;
+use Prism\Prism\Providers\OpenAI\Maps\ProviderToolCallMap;
 use Prism\Prism\Providers\OpenAI\Maps\ToolCallMap;
 use Prism\Prism\Providers\OpenAI\Maps\ToolChoiceMap;
 use Prism\Prism\Text\Request;
@@ -58,6 +59,8 @@ class Text
 
         $this->citations = $this->extractCitations($data);
 
+        $providerToolCalls = ProviderToolCallMap::map(data_get($data, 'output', []));
+
         $responseMessage = new AssistantMessage(
             content: data_get($data, 'output.{last}.content.0.text') ?? '',
             toolCalls: ToolCallMap::map(
@@ -66,6 +69,7 @@ class Text
             ),
             additionalContent: Arr::whereNotNull([
                 'citations' => $this->citations,
+                'provider_tool_calls' => $providerToolCalls === [] ? null : $providerToolCalls,
             ]),
         );
 
@@ -120,23 +124,32 @@ class Text
 
     protected function sendRequest(Request $request): ClientResponse
     {
-        return $this->client->post(
+        /** @var ClientResponse $response */
+        $response = $this->client->post(
             'responses',
             array_merge([
                 'model' => $request->model(),
                 'input' => (new MessageMap($request->messages(), $request->systemPrompts()))(),
-                'max_output_tokens' => $request->maxTokens(),
             ], Arr::whereNotNull([
+                'max_output_tokens' => $request->maxTokens(),
                 'temperature' => $request->temperature(),
                 'top_p' => $request->topP(),
                 'metadata' => $request->providerOptions('metadata'),
                 'tools' => $this->buildTools($request),
                 'tool_choice' => ToolChoiceMap::map($request->toolChoice()),
+                'parallel_tool_calls' => $request->providerOptions('parallel_tool_calls'),
                 'previous_response_id' => $request->providerOptions('previous_response_id'),
+                'service_tier' => $request->providerOptions('service_tier'),
+                'text' => $request->providerOptions('text_verbosity') ? [
+                    'verbosity' => $request->providerOptions('text_verbosity'),
+                ] : null,
                 'truncation' => $request->providerOptions('truncation'),
                 'reasoning' => $request->providerOptions('reasoning'),
+                'store' => $request->providerOptions('store'),
             ]))
         );
+
+        return $response;
     }
 
     /**
@@ -149,26 +162,43 @@ class Text
         ClientResponse $clientResponse,
         array $toolResults = []
     ): void {
+        /** @var array<array-key, array<string, mixed>> $output */
+        $output = data_get($data, 'output', []);
+
         $this->responseBuilder->addStep(new Step(
             text: data_get($data, 'output.{last}.content.0.text') ?? '',
             finishReason: $this->mapFinishReason($data),
-            toolCalls: ToolCallMap::map(array_filter(data_get($data, 'output', []), fn (array $output): bool => $output['type'] === 'function_call')),
+            toolCalls: ToolCallMap::map(array_filter($output, fn (array $output): bool => $output['type'] === 'function_call')),
             toolResults: $toolResults,
+            providerToolCalls: ProviderToolCallMap::map($output),
             usage: new Usage(
                 promptTokens: data_get($data, 'usage.input_tokens', 0) - data_get($data, 'usage.input_tokens_details.cached_tokens', 0),
                 completionTokens: data_get($data, 'usage.output_tokens'),
                 cacheReadInputTokens: data_get($data, 'usage.input_tokens_details.cached_tokens'),
-                thoughtTokens: data_get($data, 'usage.output_token_details.reasoning_tokens'),
+                thoughtTokens: data_get($data, 'usage.output_tokens_details.reasoning_tokens'),
             ),
             meta: new Meta(
                 id: data_get($data, 'id'),
                 model: data_get($data, 'model'),
                 rateLimits: $this->processRateLimits($clientResponse),
+                serviceTier: data_get($data, 'service_tier'),
             ),
             messages: $request->messages(),
             systemPrompts: $request->systemPrompts(),
             additionalContent: Arr::whereNotNull([
                 'citations' => $this->citations,
+                'searchQueries' => collect($output)
+                    ->filter(fn (array $item): bool => ($item['type'] ?? null) === 'web_search_call')
+                    ->map(fn (array $item): ?string => data_get($item, 'action.query'))
+                    ->filter()
+                    ->unique()
+                    ->values()
+                    ->toArray(),
+                'reasoningSummaries' => collect($output)
+                    ->filter(fn (array $output): bool => $output['type'] === 'reasoning')
+                    ->flatMap(fn (array $output): array => Arr::pluck($output['summary'] ?? [], 'text'))
+                    ->filter()
+                    ->toArray(),
             ]),
         ));
     }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Prism\Prism\Providers\Mistral\Handlers;
 
+use Exception;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Arr;
 use Prism\Prism\Audio\SpeechToTextRequest;
@@ -19,6 +20,7 @@ class Audio
 
     public function handleSpeechToText(SpeechToTextRequest $request): TextResponse
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = $this
             ->client
             ->attach(
@@ -40,7 +42,7 @@ class Audio
             $data = $response->json();
 
             if (! $response->successful()) {
-                throw new \Exception('Failed to transcribe audio: '.$response->body());
+                throw new Exception('Failed to transcribe audio: '.$response->body());
             }
 
             return new TextResponse(

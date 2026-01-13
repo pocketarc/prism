@@ -10,7 +10,7 @@ use Prism\Prism\Enums\Citations\CitationSourceType;
 use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Enums\Provider;
 use Prism\Prism\Exceptions\PrismException;
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Schema\ArraySchema;
 use Prism\Prism\Schema\BooleanSchema;
 use Prism\Prism\Schema\NumberSchema;
@@ -413,6 +413,35 @@ describe('provider tools', function (): void {
             ->asText();
     })->throws(PrismException::class, 'Use of provider tools with custom tools is not currently supported by Gemini.');
 
+    it('adds file_search provider tool with options to the request', function (): void {
+        FixtureResponse::fakeResponseSequence('*', 'gemini/generate-text-with-file-search');
+
+        Prism::text()
+            ->using(Provider::Gemini, 'gemini-2.5-flash')
+            ->withPrompt('What are the main topics covered in the documents?')
+            ->withProviderTools([
+                new ProviderTool(
+                    type: 'file_search',
+                    name: 'file_search',
+                    options: [
+                        'file_search_store_names' => ['fileSearchStores/prism-test-store-k48zypdei7oj'],
+                    ]
+                ),
+            ])
+            ->asText();
+
+        Http::assertSent(function (Request $request): true {
+            $data = $request->data();
+
+            expect($data['tools'][0])->toHaveKey('file_search');
+            expect($data['tools'][0]['file_search'])->toBeArray();
+            expect($data['tools'][0]['file_search'])->toHaveKey('file_search_store_names');
+            expect($data['tools'][0]['file_search']['file_search_store_names'])->toBe(['fileSearchStores/prism-test-store-k48zypdei7oj']);
+
+            return true;
+        });
+    });
+
     it('creates citations in additionalContent from search groundings', function (): void {
         FixtureResponse::fakeResponseSequence('*', 'gemini/generate-text-with-search-grounding');
 
@@ -494,7 +523,7 @@ describe('Thinking Mode for Gemini', function (): void {
         Http::assertSent(function (Request $request): true {
             $data = $request->data();
 
-            expect($data['generationConfig'])->not->toHaveKey('thinkingConfig');
+            expect($data['generationConfig'] ?? [])->not->toHaveKey('thinkingConfig');
 
             return true;
         });
@@ -523,5 +552,59 @@ describe('Thinking Mode for Gemini', function (): void {
             return true;
         });
 
+    });
+
+    it('can use thinking level with 3.0-pro', function (): void {
+        FixtureResponse::fakeResponseSequence('*', 'gemini/generate-text-with-a-prompt-with-thinking-budget');
+
+        $response = Prism::text()
+            ->using(Provider::Gemini, 'gemini-3.0-pro')
+            ->withPrompt('Explain the concept of Occam\'s Razor and provide a simple, everyday example.')
+            ->withProviderOptions(['thinkingLevel' => 'low'])
+            ->asText();
+
+        expect($response->usage->thoughtTokens)->toBe(1209);
+
+        Http::assertSent(function (Request $request): true {
+            $data = $request->data();
+
+            expect($data['generationConfig'])
+                ->toHaveKey('thinkingConfig')
+                ->and($data['generationConfig']['thinkingConfig'])->toMatchArray([
+                    'thinkingLevel' => 'low',
+                ]);
+
+            return true;
+        });
+    });
+
+    it('configure pass a thinking config', function (): void {
+        FixtureResponse::fakeResponseSequence('*', 'gemini/generate-text-with-a-prompt-with-thinking-budget');
+
+        $response = Prism::text()
+            ->using(Provider::Gemini, 'gemini-3.0-pro')
+            ->withPrompt('Explain the concept of Occam\'s Razor and provide a simple, everyday example.')
+            ->withProviderOptions([
+                'thinkingConfig' => [
+                    'thinkingLevel' => 'low',
+                    'includeThoughts' => false,
+                ],
+            ])
+            ->asText();
+
+        expect($response->usage->thoughtTokens)->toBe(1209);
+
+        Http::assertSent(function (Request $request): true {
+            $data = $request->data();
+
+            expect($data['generationConfig'])
+                ->toHaveKey('thinkingConfig')
+                ->and($data['generationConfig']['thinkingConfig'])->toMatchArray([
+                    'thinkingLevel' => 'low',
+                    'includeThoughts' => false,
+                ]);
+
+            return true;
+        });
     });
 });

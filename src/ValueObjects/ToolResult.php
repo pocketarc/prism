@@ -9,6 +9,7 @@ readonly class ToolResult
     /**
      * @param  array<string, mixed>  $args
      * @param  array<string, mixed>  $result
+     * @param  array<int, Artifact>  $artifacts
      */
     public function __construct(
         public string $toolCallId,
@@ -16,5 +17,11 @@ readonly class ToolResult
         public array $args,
         public int|float|string|array|null $result,
         public ?string $toolCallResultId = null,
+        public array $artifacts = [],
     ) {}
+
+    public function hasArtifacts(): bool
+    {
+        return $this->artifacts !== [];
+    }
 }

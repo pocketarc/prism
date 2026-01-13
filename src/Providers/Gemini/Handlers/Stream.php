@@ -8,22 +8,34 @@ use Generator;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
-use Illuminate\Support\Str;
 use Prism\Prism\Concerns\CallsTools;
-use Prism\Prism\Enums\ChunkType;
 use Prism\Prism\Enums\FinishReason;
-use Prism\Prism\Exceptions\PrismChunkDecodeException;
 use Prism\Prism\Exceptions\PrismException;
+use Prism\Prism\Exceptions\PrismStreamDecodeException;
 use Prism\Prism\Providers\Gemini\Maps\FinishReasonMap;
 use Prism\Prism\Providers\Gemini\Maps\MessageMap;
 use Prism\Prism\Providers\Gemini\Maps\ToolChoiceMap;
 use Prism\Prism\Providers\Gemini\Maps\ToolMap;
-use Prism\Prism\Text\Chunk;
+use Prism\Prism\Streaming\EventID;
+use Prism\Prism\Streaming\Events\ArtifactEvent;
+use Prism\Prism\Streaming\Events\StreamEndEvent;
+use Prism\Prism\Streaming\Events\StreamEvent;
+use Prism\Prism\Streaming\Events\StreamStartEvent;
+use Prism\Prism\Streaming\Events\TextCompleteEvent;
+use Prism\Prism\Streaming\Events\TextDeltaEvent;
+use Prism\Prism\Streaming\Events\TextStartEvent;
+use Prism\Prism\Streaming\Events\ThinkingCompleteEvent;
+use Prism\Prism\Streaming\Events\ThinkingEvent;
+use Prism\Prism\Streaming\Events\ThinkingStartEvent;
+use Prism\Prism\Streaming\Events\ToolCallEvent;
+use Prism\Prism\Streaming\Events\ToolResultEvent;
+use Prism\Prism\Streaming\StreamState;
 use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
-use Prism\Prism\ValueObjects\Meta;
 use Prism\Prism\ValueObjects\ToolCall;
+use Prism\Prism\ValueObjects\ToolOutput;
+use Prism\Prism\ValueObjects\ToolResult;
 use Prism\Prism\ValueObjects\Usage;
 use Psr\Http\Message\StreamInterface;
 use Throwable;
@@ -32,23 +44,28 @@ class Stream
 {
     use CallsTools;
 
+    protected StreamState $state;
+
     public function __construct(
         protected PendingRequest $client,
         #[\SensitiveParameter] protected string $apiKey,
-    ) {}
+    ) {
+        $this->state = new StreamState;
+    }
 
     /**
-     * @return Generator<Chunk>
+     * @return Generator<StreamEvent>
      */
     public function handle(Request $request): Generator
     {
+        $this->state->reset();
         $response = $this->sendRequest($request);
 
         yield from $this->processStream($response, $request);
     }
 
     /**
-     * @return Generator<Chunk>
+     * @return Generator<StreamEvent>
      */
     protected function processStream(Response $response, Request $request, int $depth = 0): Generator
     {
@@ -56,9 +73,6 @@ class Stream
         if ($depth >= $request->maxSteps()) {
             throw new PrismException('Maximum tool call chain depth exceeded');
         }
-
-        $text = '';
-        $toolCalls = [];
 
         while (! $response->getBody()->eof()) {
             $data = $this->parseNextDataLine($response->getBody());
@@ -68,35 +82,153 @@ class Stream
                 continue;
             }
 
+            // Debug: Log the data structure to understand thinking content
+            if (isset($_ENV['PRISM_DEBUG_GEMINI_STREAM'])) {
+                error_log('Gemini Stream Data: '.json_encode($data, JSON_PRETTY_PRINT));
+            }
+
+            // Emit stream start event once
+            if ($this->state->shouldEmitStreamStart()) {
+                $this->state->withMessageId(EventID::generate());
+
+                yield new StreamStartEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    model: data_get($data, 'modelVersion', 'unknown'),
+                    provider: 'gemini'
+                );
+                $this->state->markStreamStarted();
+            }
+
+            // Update usage data from each chunk
+            $this->state->withUsage($this->extractUsage($data, $request));
+
             // Process tool calls
             if ($this->hasToolCalls($data)) {
-                $toolCalls = $this->extractToolCalls($data, $toolCalls);
+                $toolCalls = $this->extractToolCalls($data, $this->state->toolCalls());
+                foreach ($toolCalls as $index => $toolCall) {
+                    $this->state->addToolCall($index, $toolCall);
+                }
+
+                // Emit tool call events
+                foreach ($this->state->toolCalls() as $toolCallData) {
+                    yield new ToolCallEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        toolCall: $this->mapToolCall($toolCallData),
+                        messageId: $this->state->messageId()
+                    );
+                }
 
                 // Check if this is the final part of the tool calls
                 if ($this->mapFinishReason($data) === FinishReason::ToolCalls) {
-                    yield from $this->handleToolCalls($request, $text, $toolCalls, $depth, $data);
+                    yield from $this->handleToolCalls($request, $depth, $data);
+
+                    return;
                 }
 
                 continue;
             }
 
-            // Handle content
-            $content = data_get($data, 'candidates.0.content.parts.0.text') ?? '';
-            $text .= $content;
+            // Handle content from all parts
+            $parts = data_get($data, 'candidates.0.content.parts', []);
+
+            foreach ($parts as $part) {
+                // Check if this part is thinking content (based on Google's documentation)
+                if (isset($part['thought']) && $part['thought'] === true) {
+                    // Handle thinking content - part has thought=true boolean field
+                    $thinkingContent = $part['text'] ?? '';
+
+                    if ($thinkingContent !== '') {
+                        // Start thinking if not already started
+                        if ($this->state->reasoningId() === '') {
+                            $this->state->withReasoningId(EventID::generate());
+
+                            yield new ThinkingStartEvent(
+                                id: EventID::generate(),
+                                timestamp: time(),
+                                reasoningId: $this->state->reasoningId()
+                            );
+                        }
+
+                        $this->state->appendThinking($thinkingContent);
+
+                        yield new ThinkingEvent(
+                            id: EventID::generate(),
+                            timestamp: time(),
+                            delta: $thinkingContent,
+                            reasoningId: $this->state->reasoningId()
+                        );
+                    }
+                } elseif (isset($part['text']) && (! isset($part['thought']) || $part['thought'] === false)) {
+                    // Handle regular text content (only when thought is not true)
+                    $content = $part['text'];
+
+                    if ($content !== '') {
+                        // Emit text start event once when we first get text
+                        if ($this->state->shouldEmitTextStart()) {
+                            yield new TextStartEvent(
+                                id: EventID::generate(),
+                                timestamp: time(),
+                                messageId: $this->state->messageId()
+                            );
+                            $this->state->markTextStarted();
+                        }
+
+                        $this->state->appendText($content);
+
+                        yield new TextDeltaEvent(
+                            id: EventID::generate(),
+                            timestamp: time(),
+                            delta: $content,
+                            messageId: $this->state->messageId()
+                        );
+                    }
+                }
+            }
 
             $finishReason = $this->mapFinishReason($data);
 
-            yield new Chunk(
-                text: $content,
-                finishReason: $finishReason !== FinishReason::Unknown ? $finishReason : null,
-                // gemini writes metadata in each chunk
-                meta: new Meta(
-                    id: data_get($data, 'responseId'),
-                    model: data_get($data, 'modelVersion'),
-                ),
-                usage: $this->extractUsage($data, $request),
-            );
+            if ($finishReason !== FinishReason::Unknown) {
+                if ($this->state->reasoningId() !== '') {
+                    yield new ThinkingCompleteEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        reasoningId: $this->state->reasoningId()
+                    );
+                }
+
+                if ($this->state->hasTextStarted()) {
+                    yield new TextCompleteEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        messageId: $this->state->messageId()
+                    );
+                }
+
+                $this->state->withFinishReason($finishReason);
+                $this->state->withMetadata([
+                    'grounding_metadata' => $this->extractGroundingMetadata($data),
+                ]);
+            }
         }
+
+        if ($this->state->hasToolCalls()) {
+            yield from $this->handleToolCalls($request, $depth);
+
+            return;
+        }
+
+        yield new StreamEndEvent(
+            id: EventID::generate(),
+            timestamp: time(),
+            finishReason: $this->state->finishReason() ?? FinishReason::Stop,
+            usage: $this->state->usage(),
+            additionalContent: Arr::whereNotNull([
+                'grounding_metadata' => $this->state->metadata()['grounding_metadata'] ?? null,
+                'thoughtSummaries' => $this->state->thinkingSummaries() === [] ? null : $this->state->thinkingSummaries(),
+            ])
+        );
     }
 
     /**
@@ -119,7 +251,7 @@ class Stream
         try {
             return json_decode($line, true, flags: JSON_THROW_ON_ERROR);
         } catch (Throwable $e) {
-            throw new PrismChunkDecodeException('Gemini', $e);
+            throw new PrismStreamDecodeException('Gemini', $e);
         }
     }
 
@@ -134,8 +266,10 @@ class Stream
 
         foreach ($parts as $index => $part) {
             if (isset($part['functionCall'])) {
+                $toolCalls[$index]['id'] = EventID::generate('gm');
                 $toolCalls[$index]['name'] = data_get($part, 'functionCall.name');
-                $toolCalls[$index]['arguments'] = data_get($part, 'functionCall.args', '');
+                $toolCalls[$index]['arguments'] = data_get($part, 'functionCall.args', []);
+                $toolCalls[$index]['reasoningId'] = data_get($part, 'thoughtSignature');
             }
         }
 
@@ -143,65 +277,126 @@ class Stream
     }
 
     /**
-     * @param  array<int, array<string, mixed>>  $toolCalls
      * @param  array<string, mixed>  $data
-     * @return Generator<Chunk>
+     * @return Generator<StreamEvent>
      */
     protected function handleToolCalls(
         Request $request,
-        string $text,
-        array $toolCalls,
         int $depth,
-        array $data
+        array $data = []
     ): Generator {
-        $toolCalls = $this->mapToolCalls($toolCalls);
+        $mappedToolCalls = [];
 
-        yield new Chunk(
-            text: '',
-            toolCalls: $toolCalls,
-            meta: new Meta(
-                id: data_get($data, 'responseId'),
-                model: data_get($data, 'modelVersion'),
-            ),
-            chunkType: ChunkType::ToolCall,
-            usage: $this->extractUsage($data, $request),
-        );
+        // Convert tool calls to ToolCall objects
+        foreach ($this->state->toolCalls() as $toolCallData) {
+            $mappedToolCalls[] = $this->mapToolCall($toolCallData);
+        }
 
-        $toolResults = $this->callTools($request->tools(), $toolCalls);
+        // Execute tools and emit results
+        $toolResults = [];
+        foreach ($mappedToolCalls as $toolCall) {
+            try {
+                $tool = $this->resolveTool($toolCall->name, $request->tools());
+                $output = call_user_func_array($tool->handle(...), $toolCall->arguments());
 
-        yield new Chunk(
-            text: '',
-            toolResults: $toolResults,
-            meta: new Meta(
-                id: data_get($data, 'responseId'),
-                model: data_get($data, 'modelVersion'),
-            ),
-            chunkType: ChunkType::ToolResult,
-            usage: $this->extractUsage($data, $request),
-        );
+                if (is_string($output)) {
+                    $output = new ToolOutput(result: $output);
+                }
 
-        $request->addMessage(new AssistantMessage($text, $toolCalls));
-        $request->addMessage(new ToolResultMessage($toolResults));
+                $toolResult = new ToolResult(
+                    toolCallId: $toolCall->id,
+                    toolName: $toolCall->name,
+                    args: $toolCall->arguments(),
+                    result: is_array($output->result) ? $output->result : ['result' => $output->result],
+                    artifacts: $output->artifacts,
+                );
 
-        $nextResponse = $this->sendRequest($request);
-        yield from $this->processStream($nextResponse, $request, $depth + 1);
+                $toolResults[] = $toolResult;
+
+                yield new ToolResultEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    toolResult: $toolResult,
+                    messageId: $this->state->messageId(),
+                    success: true
+                );
+
+                foreach ($toolResult->artifacts as $artifact) {
+                    yield new ArtifactEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        artifact: $artifact,
+                        toolCallId: $toolCall->id,
+                        toolName: $toolCall->name,
+                        messageId: $this->state->messageId(),
+                    );
+                }
+            } catch (Throwable $e) {
+                $errorResult = new ToolResult(
+                    toolCallId: $toolCall->id,
+                    toolName: $toolCall->name,
+                    args: $toolCall->arguments(),
+                    result: []
+                );
+
+                $toolResults[] = $errorResult;
+
+                yield new ToolResultEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    toolResult: $errorResult,
+                    messageId: $this->state->messageId(),
+                    success: false,
+                    error: $e->getMessage()
+                );
+            }
+        }
+
+        if ($toolResults !== []) {
+            $request->addMessage(new AssistantMessage($this->state->currentText(), $mappedToolCalls));
+            $request->addMessage(new ToolResultMessage($toolResults));
+
+            $depth++;
+            if ($depth < $request->maxSteps()) {
+                $previousUsage = $this->state->usage();
+                $this->state->reset();
+                $nextResponse = $this->sendRequest($request);
+                yield from $this->processStream($nextResponse, $request, $depth);
+
+                if ($previousUsage instanceof \Prism\Prism\ValueObjects\Usage && $this->state->usage() instanceof \Prism\Prism\ValueObjects\Usage) {
+                    $this->state->withUsage(new Usage(
+                        promptTokens: $previousUsage->promptTokens + $this->state->usage()->promptTokens,
+                        completionTokens: $previousUsage->completionTokens + $this->state->usage()->completionTokens,
+                        cacheWriteInputTokens: ($previousUsage->cacheWriteInputTokens ?? 0) + ($this->state->usage()->cacheWriteInputTokens ?? 0),
+                        cacheReadInputTokens: ($previousUsage->cacheReadInputTokens ?? 0) + ($this->state->usage()->cacheReadInputTokens ?? 0),
+                        thoughtTokens: ($previousUsage->thoughtTokens ?? 0) + ($this->state->usage()->thoughtTokens ?? 0)
+                    ));
+                }
+            }
+        }
     }
 
     /**
-     * Convert raw tool call data to ToolCall objects.
+     * Convert raw tool call data to ToolCall object.
      *
-     * @param  array<int, array<string, mixed>>  $toolCalls
-     * @return array<int, ToolCall>
+     * @param  array<string, mixed>  $toolCallData
      */
-    protected function mapToolCalls(array $toolCalls): array
+    protected function mapToolCall(array $toolCallData): ToolCall
     {
-        return collect($toolCalls)
-            ->map(fn ($toolCall): ToolCall => new ToolCall(
-                empty($toolCall['id']) ? 'gm-'.Str::random(20) : $toolCall['id'],
-                data_get($toolCall, 'name'),
-                data_get($toolCall, 'arguments'),
-            ))
-            ->toArray();
+        $arguments = data_get($toolCallData, 'arguments', []);
+
+        // If arguments is a string, try to decode it as JSON
+        if (is_string($arguments) && $arguments !== '') {
+            $decoded = json_decode($arguments, true);
+            $arguments = json_last_error() === JSON_ERROR_NONE ? $decoded : ['input' => $arguments];
+        }
+
+        return new ToolCall(
+            id: empty($toolCallData['id']) ? EventID::generate('gm') : $toolCallData['id'],
+            name: data_get($toolCallData, 'name', 'unknown'),
+            arguments: $arguments,
+            reasoningId: data_get($toolCallData, 'reasoningId')
+        );
     }
 
     /**
@@ -232,8 +427,8 @@ class Stream
                 ? (data_get($data, 'usageMetadata.promptTokenCount', 0) - data_get($data, 'usageMetadata.cachedContentTokenCount', 0))
                 : data_get($data, 'usageMetadata.promptTokenCount', 0),
             completionTokens: data_get($data, 'usageMetadata.candidatesTokenCount', 0),
-            cacheReadInputTokens: data_get($data, 'usageMetadata.cachedContentTokenCount', null),
-            thoughtTokens: data_get($data, 'usageMetadata.thoughtsTokenCount', null),
+            cacheReadInputTokens: data_get($data, 'usageMetadata.cachedContentTokenCount'),
+            thoughtTokens: data_get($data, 'usageMetadata.thoughtsTokenCount'),
         );
     }
 
@@ -257,21 +452,51 @@ class Stream
     {
         $providerOptions = $request->providerOptions();
 
+        if ($request->tools() !== [] && $request->providerTools() !== []) {
+            throw new PrismException('Use of provider tools with custom tools is not currently supported by Gemini.');
+        }
+
         if ($request->tools() !== [] && ($providerOptions['searchGrounding'] ?? false)) {
             throw new PrismException('Use of search grounding with custom tools is not currently supported by Prism.');
         }
 
-        $tools = match (true) {
-            $providerOptions['searchGrounding'] ?? false => [
+        $tools = [];
+
+        if ($request->providerTools() !== []) {
+            $tools = array_map(
+                fn ($providerTool): array => [
+                    $providerTool->type => $providerTool->options !== [] ? $providerTool->options : (object) [],
+                ],
+                $request->providerTools()
+            );
+        } elseif ($providerOptions['searchGrounding'] ?? false) {
+            $tools = [
                 [
                     'google_search' => (object) [],
                 ],
-            ],
-            $request->tools() !== [] => ['function_declarations' => ToolMap::map($request->tools())],
-            default => [],
-        };
+            ];
+        } elseif ($request->tools() !== []) {
+            $tools = ['function_declarations' => ToolMap::map($request->tools())];
+        }
 
-        return $this->client
+        $thinkingConfig = $providerOptions['thinkingConfig'] ?? null;
+
+        if (isset($providerOptions['thinkingBudget'])) {
+            $thinkingConfig = [
+                'thinkingBudget' => $providerOptions['thinkingBudget'],
+                'includeThoughts' => true,
+            ];
+        }
+
+        if (isset($providerOptions['thinkingLevel'])) {
+            $thinkingConfig = [
+                'thinkingLevel' => $providerOptions['thinkingLevel'],
+                'includeThoughts' => true,
+            ];
+        }
+
+        /** @var Response $response */
+        $response = $this->client
             ->withOptions(['stream' => true])
             ->post(
                 "{$request->model()}:streamGenerateContent?alt=sse",
@@ -282,15 +507,15 @@ class Stream
                         'temperature' => $request->temperature(),
                         'topP' => $request->topP(),
                         'maxOutputTokens' => $request->maxTokens(),
-                        'thinkingConfig' => Arr::whereNotNull([
-                            'thinkingBudget' => $providerOptions['thinkingBudget'] ?? null,
-                        ]) ?: null,
-                    ]),
+                        'thinkingConfig' => $thinkingConfig,
+                    ]) ?: null,
                     'tools' => $tools !== [] ? $tools : null,
                     'tool_config' => $request->toolChoice() ? ToolChoiceMap::map($request->toolChoice()) : null,
                     'safetySettings' => $providerOptions['safetySettings'] ?? null,
                 ])
             );
+
+        return $response;
     }
 
     protected function readLine(StreamInterface $stream): string
@@ -312,5 +537,33 @@ class Stream
         }
 
         return $buffer;
+    }
+
+    /**
+     * Check if a part contains thinking content based on Gemini's structure
+     *
+     * @param  array<string, mixed>  $part
+     */
+    protected function isThinkingContent(array $part): bool
+    {
+        // According to Google's documentation, thinking content is marked with thought=true
+        return isset($part['thought']) && $part['thought'] === true;
+    }
+
+    /**
+     * Extract grounding metadata from Gemini API response
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>|null
+     */
+    protected function extractGroundingMetadata(array $data): ?array
+    {
+        $groundingMetadata = data_get($data, 'candidates.0.groundingMetadata');
+
+        if (! $groundingMetadata) {
+            return null;
+        }
+
+        return $groundingMetadata;
     }
 }

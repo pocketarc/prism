@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Prism\Prism\Providers\Anthropic\ValueObjects;
 
+use InvalidArgumentException;
+
 class LegacyAnthropicMessagePartWithCitations
 {
     /**
@@ -27,17 +29,17 @@ class LegacyAnthropicMessagePartWithCitations
                     'char_location' => 'char_index',
                     'content_block_location' => 'block_index',
                     'web_search_result_location' => null,
-                    default => throw new \InvalidArgumentException("Unknown citation type: {$citation['type']}"),
+                    default => throw new InvalidArgumentException("Unknown citation type: {$citation['type']}"),
                 };
 
                 return new LegacyAnthropicCitation(
                     type: $citation['type'],
                     citedText: data_get($citation, 'cited_text'),
-                    startIndex: $indexPropertyCommonPart ? data_get($citation, "start_$indexPropertyCommonPart", null) : null,
-                    endIndex: $indexPropertyCommonPart ? data_get($citation, "end_$indexPropertyCommonPart", null) : null,
-                    documentIndex: data_get($citation, 'document_index', null),
-                    documentTitle: data_get($citation, 'document_title', null) ?? data_get($citation, 'title', null),
-                    url: data_get($citation, 'url', null)
+                    startIndex: $indexPropertyCommonPart ? data_get($citation, "start_$indexPropertyCommonPart") : null,
+                    endIndex: $indexPropertyCommonPart ? data_get($citation, "end_$indexPropertyCommonPart") : null,
+                    documentIndex: data_get($citation, 'document_index'),
+                    documentTitle: data_get($citation, 'document_title') ?? data_get($citation, 'title'),
+                    url: data_get($citation, 'url')
                 );
             }, $data['citations'] ?? [])
         );
@@ -56,7 +58,7 @@ class LegacyAnthropicMessagePartWithCitations
                     'page_location' => 'page_number',
                     'char_location' => 'char_index',
                     'content_block_location' => 'block_index',
-                    default => throw new \InvalidArgumentException("Unknown citation type: {$citation->type}"),
+                    default => throw new InvalidArgumentException("Unknown citation type: {$citation->type}"),
                 };
 
                 return [

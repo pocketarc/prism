@@ -8,7 +8,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use Prism\Prism\Enums\Provider;
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\ValueObjects\Media\Audio;
 use Prism\Prism\ValueObjects\Media\Video;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
@@ -232,6 +232,108 @@ describe('Media support with Gemini', function (): void {
                 ->and($message[1]['inline_data']['data'])->toBe(
                     base64_encode(file_get_contents('tests/Fixtures/sample-audio.wav'))
                 );
+
+            return true;
+        });
+    });
+
+    it('can send youtube url as file uri for videos', function (): void {
+        FixtureResponse::fakeResponseSequence('*', 'gemini/media-detection');
+
+        $youtubeUrl = 'https://www.youtube.com/watch?v=cGpQAjhZj9o';
+
+        $response = Prism::text()
+            ->using(Provider::Gemini, 'gemini-1.5-flash')
+            ->withMessages([
+                new UserMessage(
+                    'Summarize this YouTube video',
+                    additionalContent: [
+                        Video::fromUrl($youtubeUrl),
+                    ],
+                ),
+            ])
+            ->asText();
+
+        Http::assertSent(function (Request $request) use ($youtubeUrl): bool {
+            $message = $request->data()['contents'][0]['parts'];
+
+            expect($message[0])
+                ->toBe([
+                    'text' => 'Summarize this YouTube video',
+                ])
+                ->and($message[1])->toHaveKey('file_data')
+                ->and($message[1])->not->toHaveKey('inline_data')
+                ->and($message[1]['file_data'])->toBe([
+                    'file_uri' => $youtubeUrl,
+                ]);
+
+            return true;
+        });
+    });
+
+    it('can send youtube short url as file uri for videos', function (): void {
+        FixtureResponse::fakeResponseSequence('*', 'gemini/media-detection');
+
+        $youtubeUrl = 'https://youtu.be/cGpQAjhZj9o';
+
+        $response = Prism::text()
+            ->using(Provider::Gemini, 'gemini-1.5-flash')
+            ->withMessages([
+                new UserMessage(
+                    'Summarize this YouTube video',
+                    additionalContent: [
+                        Video::fromUrl($youtubeUrl),
+                    ],
+                ),
+            ])
+            ->asText();
+
+        Http::assertSent(function (Request $request) use ($youtubeUrl): bool {
+            $message = $request->data()['contents'][0]['parts'];
+
+            expect($message[0])
+                ->toBe([
+                    'text' => 'Summarize this YouTube video',
+                ])
+                ->and($message[1])->toHaveKey('file_data')
+                ->and($message[1])->not->toHaveKey('inline_data')
+                ->and($message[1]['file_data'])->toBe([
+                    'file_uri' => $youtubeUrl,
+                ]);
+
+            return true;
+        });
+    });
+
+    it('can send gemini file api uri as file uri', function (): void {
+        FixtureResponse::fakeResponseSequence('*', 'gemini/media-detection');
+
+        $geminiFileUri = 'https://generativelanguage.googleapis.com/v1beta/files/abc-123';
+
+        $response = Prism::text()
+            ->using(Provider::Gemini, 'gemini-1.5-flash')
+            ->withMessages([
+                new UserMessage(
+                    'Describe this video',
+                    additionalContent: [
+                        Video::fromUrl($geminiFileUri),
+                    ],
+                ),
+            ])
+            ->asText();
+
+        Http::assertSent(function (Request $request) use ($geminiFileUri): bool {
+            $message = $request->data()['contents'][0]['parts'];
+
+            expect($message[0])
+                ->toBe([
+                    'text' => 'Describe this video',
+                ])
+                ->and($message[1])->toHaveKey('file_data')
+                ->and($message[1])->not->toHaveKey('inline_data')
+                ->and($message[1]['file_data'])->toBe([
+                    'file_uri' => $geminiFileUri,
+                ]);
 
             return true;
         });

@@ -131,6 +131,74 @@ $profileSchema = new ObjectSchema(
 );
 ```
 
+### AnyOfSchema
+
+For flexible data that can match one of several schemas. This is particularly useful when you need to handle different data types or structures in the same field.
+
+> [!IMPORTANT]
+> **Provider Compatibility**: The AnyOfSchema works with OpenAI's structured outputs and Gemini's enhanced JSON Schema support (as of November 2025). Each nested schema must be a valid JSON schema according to the provider's requirements. For best results, ensure each nested schema has a proper `type` field.
+
+```php
+use Prism\Prism\Schema\AnyOfSchema;
+use Prism\Prism\Schema\StringSchema;
+use Prism\Prism\Schema\NumberSchema;
+use Prism\Prism\Schema\ObjectSchema;
+
+// Simple example: A value that can be either a string or number
+$flexibleValueSchema = new AnyOfSchema(
+    schemas: [
+        new StringSchema('text', 'A text value'),
+        new NumberSchema('number', 'A numeric value'),
+    ],
+    name: 'flexible_value',
+    description: 'A value that can be either text or numeric'
+);
+
+// Complex example: Different content types
+$contentSchema = new AnyOfSchema(
+    schemas: [
+        new ObjectSchema(
+            name: 'article',
+            description: 'A blog article',
+            properties: [
+                new StringSchema('title', 'Article title'),
+                new StringSchema('content', 'Article content'),
+                new StringSchema('author', 'Article author'),
+            ],
+            requiredFields: ['title', 'content']
+        ),
+        new ObjectSchema(
+            name: 'image',
+            description: 'An image post',
+            properties: [
+                new StringSchema('url', 'Image URL'),
+                new StringSchema('caption', 'Image caption'),
+                new NumberSchema('width', 'Image width in pixels'),
+                new NumberSchema('height', 'Image height in pixels'),
+            ],
+            requiredFields: ['url']
+        ),
+    ],
+    name: 'content',
+    description: 'Content that can be either an article or an image'
+);
+```
+
+**Key Features:**
+- Accepts an array of schema objects that define the possible types
+- Automatically validates nested schemas for OpenAI compatibility
+- Supports nullable values through the `nullable` parameter
+- Optional name and description parameters
+- Removes unsupported JSON schema properties automatically
+
+**Provider Support for AnyOfSchema:**
+
+| Provider   | anyOf Support | Available Since | Notes |
+|------------|---------------|-----------------|-------|
+| OpenAI     | ✅ Full       | GPT-4 onwards   | Works with structured outputs API |
+| Gemini     | ✅ Full       | Gemini 2.5+     | Enhanced JSON Schema support (Nov 2025) |
+| Anthropic  | ❌ Not supported | -            | Use alternative schema design patterns |
+
 ## Nullable Fields
 
 Sometimes, not every field is required. You can make any schema nullable by setting the `nullable` parameter to `true`:
@@ -163,9 +231,9 @@ $userSchema = new ObjectSchema(
     properties: [
         new StringSchema('email', 'Primary email address'),
         new StringSchema('name', 'User\'s full name'),
-        new StringSchema('bio', 'User biography'),
+        new StringSchema('bio', 'User biography', nullable: true), // bio can be null
     ],
-    requiredFields: ['email', 'name'] // email and name must be present
+    requiredFields: ['email', 'name', 'bio'] // all fields must be present
 );
 ```
 

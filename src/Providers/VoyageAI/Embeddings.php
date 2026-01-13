@@ -33,7 +33,7 @@ class Embeddings
         return new EmbeddingsResponse(
             embeddings: array_map(fn (array $item): Embedding => Embedding::fromArray($item['embedding']), data_get($data, 'data', [])),
             usage: new EmbeddingsUsage(
-                tokens: data_get($data, 'usage.total_tokens', null),
+                tokens: data_get($data, 'usage.total_tokens'),
             ),
             meta: new Meta(
                 id: '',
@@ -46,12 +46,15 @@ class Embeddings
     {
         $providerOptions = $this->request->providerOptions();
 
-        $this->httpResponse = $this->client->post('embeddings', Arr::whereNotNull([
+        /** @var Response $response */
+        $response = $this->client->post('embeddings', Arr::whereNotNull([
             'model' => $this->request->model(),
             'input' => $this->request->inputs(),
             'input_type' => $providerOptions['inputType'] ?? null,
             'truncation' => $providerOptions['truncation'] ?? null,
         ]));
+
+        $this->httpResponse = $response;
     }
 
     protected function validateResponse(): void

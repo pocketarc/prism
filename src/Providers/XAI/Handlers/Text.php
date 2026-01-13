@@ -118,7 +118,10 @@ class Text
             'tool_choice' => ToolChoiceMap::map($request->toolChoice()),
         ]));
 
-        return $this->client->post('chat/completions', $payload);
+        /** @var ClientResponse $response */
+        $response = $this->client->post('chat/completions', $payload);
+
+        return $response;
     }
 
     /**
@@ -155,6 +158,7 @@ class Text
             finishReason: $this->mapFinishReason($data),
             toolCalls: $this->mapToolCalls(data_get($data, 'choices.0.message.tool_calls', [])),
             toolResults: $toolResults,
+            providerToolCalls: [],
             usage: new Usage(
                 data_get($data, 'usage.prompt_tokens', 0),
                 data_get($data, 'usage.completion_tokens', 0),

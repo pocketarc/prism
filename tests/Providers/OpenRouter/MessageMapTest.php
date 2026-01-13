@@ -3,7 +3,10 @@
 declare(strict_types=1);
 
 use Prism\Prism\Providers\OpenRouter\Maps\MessageMap;
+use Prism\Prism\ValueObjects\Media\Audio;
+use Prism\Prism\ValueObjects\Media\Document;
 use Prism\Prism\ValueObjects\Media\Image;
+use Prism\Prism\ValueObjects\Media\Video;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\SystemMessage;
 use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
@@ -39,6 +42,8 @@ it('maps user messages with images from path', function (): void {
 
     $mappedMessage = $messageMap();
 
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
     expect(data_get($mappedMessage, '0.content.1.type'))
         ->toBe('image_url');
     expect(data_get($mappedMessage, '0.content.1.image_url.url'))
@@ -58,6 +63,8 @@ it('maps user messages with images from base64', function (): void {
     );
 
     $mappedMessage = $messageMap();
+
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
     expect(data_get($mappedMessage, '0.content.1.type'))
         ->toBe('image_url');
@@ -79,10 +86,50 @@ it('maps user messages with images from url', function (): void {
 
     $mappedMessage = $messageMap();
 
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
     expect(data_get($mappedMessage, '0.content.1.type'))
         ->toBe('image_url');
     expect(data_get($mappedMessage, '0.content.1.image_url.url'))
         ->toBe('https://prismphp.com/storage/diamond.png');
+});
+
+it('maps user messages with audio input', function (): void {
+    $audio = Audio::fromBase64(base64_encode('audio-content'), 'audio/wav');
+
+    $messageMap = new MessageMap(
+        messages: [
+            new UserMessage('Who are you?', [$audio]),
+        ],
+        systemPrompts: []
+    );
+
+    $mappedMessage = $messageMap();
+
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
+    expect(data_get($mappedMessage, '0.content.1.type'))->toBe('input_audio');
+    expect(data_get($mappedMessage, '0.content.1.input_audio.format'))->toBe('wav');
+    expect(data_get($mappedMessage, '0.content.1.input_audio.data'))->toBe(base64_encode('audio-content'));
+});
+
+it('maps user messages with video input', function (): void {
+    $video = Video::fromBase64(base64_encode('video-content'), 'video/mp4');
+
+    $messageMap = new MessageMap(
+        messages: [
+            new UserMessage('Who are you?', [$video]),
+        ],
+        systemPrompts: []
+    );
+
+    $mappedMessage = $messageMap();
+
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
+    expect(data_get($mappedMessage, '0.content.1.type'))->toBe('input_video');
+    expect(data_get($mappedMessage, '0.content.1.input_video.format'))->toBe('mp4');
+    expect(data_get($mappedMessage, '0.content.1.input_video.data'))->toBe(base64_encode('video-content'));
 });
 
 it('maps assistant message', function (): void {
@@ -180,4 +227,100 @@ it('maps system prompt', function (): void {
             ],
         ],
     ]);
+});
+
+it('maps system prompt with cache_control', function (): void {
+    $messageMap = new MessageMap(
+        messages: [new UserMessage('Who are you?')],
+        systemPrompts: [
+            (new SystemMessage('I am a long re-usable system message.'))
+                ->withProviderOptions(['cacheType' => 'ephemeral']),
+        ]
+    );
+
+    expect($messageMap())->toBe([
+        [
+            'role' => 'system',
+            'content' => [
+                [
+                    'type' => 'text',
+                    'text' => 'I am a long re-usable system message.',
+                    'cache_control' => ['type' => 'ephemeral'],
+                ],
+            ],
+        ],
+        [
+            'role' => 'user',
+            'content' => [
+                ['type' => 'text', 'text' => 'Who are you?'],
+            ],
+        ],
+    ]);
+});
+
+it('maps user message with cache_control', function (): void {
+    $messageMap = new MessageMap(
+        messages: [
+            (new UserMessage('I am a long re-usable user message.'))
+                ->withProviderOptions(['cacheType' => 'ephemeral']),
+        ],
+        systemPrompts: []
+    );
+
+    expect($messageMap())->toBe([[
+        'role' => 'user',
+        'content' => [
+            [
+                'type' => 'text',
+                'text' => 'I am a long re-usable user message.',
+                'cache_control' => ['type' => 'ephemeral'],
+            ],
+        ],
+    ]]);
+});
+
+it('maps user messages with documents from base64', function (): void {
+    $messageMap = new MessageMap(
+        messages: [
+            new UserMessage('Here is the document', [
+                Document::fromBase64(base64_encode(file_get_contents('tests/Fixtures/test-pdf.pdf')), 'application/pdf', 'test.pdf'),
+            ]),
+        ],
+        systemPrompts: []
+    );
+
+    $mappedMessage = $messageMap();
+
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
+    expect(data_get($mappedMessage, '0.content.1.type'))
+        ->toBe('file');
+    expect(data_get($mappedMessage, '0.content.1.file.filename'))
+        ->toBe('test.pdf');
+    expect(data_get($mappedMessage, '0.content.1.file.file_data'))
+        ->toStartWith('data:application/pdf;base64,');
+    expect(data_get($mappedMessage, '0.content.1.file.file_data'))
+        ->toContain(base64_encode(file_get_contents('tests/Fixtures/test-pdf.pdf')));
+});
+
+it('maps user messages with documents from url', function (): void {
+    $messageMap = new MessageMap(
+        messages: [
+            new UserMessage('Here is the document', [
+                Document::fromUrl('https://example.com/document.pdf', 'document.pdf'),
+            ]),
+        ],
+        systemPrompts: []
+    );
+
+    $mappedMessage = $messageMap();
+
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
+    expect(data_get($mappedMessage, '0.content.1.type'))
+        ->toBe('file');
+    expect(data_get($mappedMessage, '0.content.1.file.filename'))
+        ->toBe('document.pdf');
+    expect(data_get($mappedMessage, '0.content.1.file.file_data'))
+        ->toBe('https://example.com/document.pdf');
 });

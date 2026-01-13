@@ -7,6 +7,7 @@ namespace Prism\Prism\Providers\OpenRouter;
 use Generator;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
+use JsonException;
 use Prism\Prism\Concerns\InitializesClient;
 use Prism\Prism\Enums\Provider as ProviderName;
 use Prism\Prism\Exceptions\PrismException;
@@ -29,6 +30,8 @@ class OpenRouter extends Provider
     public function __construct(
         #[\SensitiveParameter] public readonly string $apiKey,
         public readonly string $url,
+        public readonly ?string $httpReferer = null,
+        public readonly ?string $xTitle = null,
     ) {}
 
     #[\Override]
@@ -68,7 +71,20 @@ class OpenRouter extends Provider
     {
         $statusCode = $e->response->getStatusCode();
         $responseData = $e->response->json();
-        $errorMessage = data_get($responseData, 'error.message', 'Unknown error');
+
+        $rawMetadata = data_get($responseData, 'error.metadata.raw');
+
+        try {
+            $jsonMetadata = $rawMetadata ? json_decode((string) $rawMetadata, true, 512, JSON_THROW_ON_ERROR) : [];
+        } catch (JsonException) {
+            $jsonMetadata = [];
+        }
+
+        $errorMessage = data_get($jsonMetadata, 'error.message');
+
+        if (! $errorMessage) {
+            $errorMessage = data_get($responseData, 'error.message', 'Unknown error');
+        }
 
         match ($statusCode) {
             400 => throw PrismException::providerResponseError(
@@ -108,6 +124,10 @@ class OpenRouter extends Provider
     protected function client(array $options = [], array $retry = [], ?string $baseUrl = null): PendingRequest
     {
         return $this->baseClient()
+            ->withHeaders(array_filter([
+                'HTTP-Referer' => $this->httpReferer,
+                'X-Title' => $this->xTitle,
+            ]))
             ->when($this->apiKey, fn ($client) => $client->withToken($this->apiKey))
             ->withOptions($options)
             ->when($retry !== [], fn ($client) => $client->retry(...$retry))

@@ -34,14 +34,32 @@ readonly class ResponseBuilder
         return new Response(
             steps: $this->steps,
             text: $finalStep->text,
-            structured: $finalStep->structured === [] && $finalStep->finishReason === FinishReason::Stop
-                ? $this->decodeObject($finalStep->text)
-                : $finalStep->structured,
+            structured: $this->extractFinalStructuredData($finalStep),
             finishReason: $finalStep->finishReason,
             usage: $this->calculateTotalUsage(),
             meta: $finalStep->meta,
+            toolCalls: $this->aggregateToolCalls(),
+            toolResults: $this->aggregateToolResults(),
             additionalContent: $finalStep->additionalContent,
         );
+    }
+
+    /**
+     * @return array<mixed>
+     */
+    protected function extractFinalStructuredData(Step $finalStep): array
+    {
+        if ($this->shouldDecodeFromText($finalStep)) {
+            return $this->decodeObject($finalStep->text);
+        }
+
+        return $finalStep->structured;
+    }
+
+    protected function shouldDecodeFromText(Step $finalStep): bool
+    {
+        return $finalStep->structured === []
+            && $finalStep->finishReason === FinishReason::Stop;
     }
 
     /**
@@ -50,10 +68,38 @@ readonly class ResponseBuilder
     protected function decodeObject(string $responseText): array
     {
         try {
+            $pattern = '/^```(?:json)?\s*\n?(.*?)\n?```$/s';
+
+            if (preg_match($pattern, trim($responseText), $matches)) {
+                $responseText = trim($matches[1]);
+            }
+
             return json_decode($responseText, true, flags: JSON_THROW_ON_ERROR);
         } catch (\JsonException) {
             throw PrismStructuredDecodingException::make($responseText);
         }
+    }
+
+    /**
+     * @return array<int, \Prism\Prism\ValueObjects\ToolCall>
+     */
+    protected function aggregateToolCalls(): array
+    {
+        return $this->steps
+            ->flatMap(fn (Step $step): array => $step->toolCalls)
+            ->values()
+            ->toArray();
+    }
+
+    /**
+     * @return array<int, \Prism\Prism\ValueObjects\ToolResult>
+     */
+    protected function aggregateToolResults(): array
+    {
+        return $this->steps
+            ->flatMap(fn (Step $step): array => $step->toolResults)
+            ->values()
+            ->toArray();
     }
 
     protected function calculateTotalUsage(): Usage

@@ -10,6 +10,8 @@ use Illuminate\Support\Arr;
 use Prism\Prism\Concerns\CallsTools;
 use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Exceptions\PrismException;
+use Prism\Prism\Providers\Mistral\Concerns\ExtractsText;
+use Prism\Prism\Providers\Mistral\Concerns\ExtractsThinking;
 use Prism\Prism\Providers\Mistral\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\Mistral\Concerns\ProcessRateLimits;
 use Prism\Prism\Providers\Mistral\Concerns\ValidatesResponse;
@@ -30,6 +32,8 @@ use Prism\Prism\ValueObjects\Usage;
 class Text
 {
     use CallsTools;
+    use ExtractsText;
+    use ExtractsThinking;
     use MapsFinishReason;
     use ProcessRateLimits;
     use ValidatesResponse;
@@ -50,7 +54,7 @@ class Text
         $data = $response->json();
 
         $responseMessage = new AssistantMessage(
-            data_get($data, 'choices.0.message.content') ?? '',
+            $this->extractText(data_get($data, 'choices.0.message', [])),
             $this->mapToolCalls(data_get($data, 'choices.0.message.tool_calls', [])),
         );
 
@@ -110,10 +114,11 @@ class Text
     protected function addStep(array $data, Request $request, ClientResponse $clientResponse, array $toolResults = []): void
     {
         $this->responseBuilder->addStep(new Step(
-            text: data_get($data, 'choices.0.message.content') ?? '',
+            text: $this->extractText(data_get($data, 'choices.0.message', [])),
             finishReason: $this->mapFinishReason($data),
             toolCalls: $this->mapToolCalls(data_get($data, 'choices.0.message.tool_calls', [])),
             toolResults: $toolResults,
+            providerToolCalls: [],
             usage: new Usage(
                 data_get($data, 'usage.prompt_tokens'),
                 data_get($data, 'usage.completion_tokens'),
@@ -125,13 +130,14 @@ class Text
             ),
             messages: $request->messages(),
             systemPrompts: $request->systemPrompts(),
-            additionalContent: [],
+            additionalContent: $this->extractThinking(data_get($data, 'choices.0.message', [])),
         ));
     }
 
     protected function sendRequest(Request $request): ClientResponse
     {
-        return $this->client->post(
+        /** @var ClientResponse $response */
+        $response = $this->client->post(
             'chat/completions',
             array_merge([
                 'model' => $request->model(),
@@ -144,6 +150,8 @@ class Text
                 'tool_choice' => ToolChoiceMap::map($request->toolChoice()),
             ]))
         );
+
+        return $response;
     }
 
     /**
@@ -156,7 +164,7 @@ class Text
             return [];
         }
 
-        return array_map(fn ($toolCall): \Prism\Prism\ValueObjects\ToolCall => new ToolCall(
+        return array_map(fn ($toolCall): ToolCall => new ToolCall(
             id: data_get($toolCall, 'id'),
             name: data_get($toolCall, 'function.name'),
             arguments: data_get($toolCall, 'function.arguments'),

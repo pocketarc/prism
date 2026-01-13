@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Prism\Prism\Providers\ElevenLabs\Handlers;
 
+use Exception;
 use Illuminate\Http\Client\PendingRequest;
 use Prism\Prism\Audio\AudioResponse;
 use Prism\Prism\Audio\SpeechToTextRequest;
 use Prism\Prism\Audio\TextResponse;
 use Prism\Prism\Audio\TextToSpeechRequest;
 use Prism\Prism\Providers\ElevenLabs\Maps\TextToSpeechRequestMapper;
+use Prism\Prism\ValueObjects\GeneratedAudio;
 
 class Audio
 {
@@ -17,20 +19,27 @@ class Audio
 
     public function handleTextToSpeech(TextToSpeechRequest $request): AudioResponse
     {
-        // TODO: Implement ElevenLabs text-to-speech API call
-        // 1. Use TextToSpeechRequestMapper to convert request to ElevenLabs format
-        // 2. Make POST request to /text-to-speech/{voice_id}
-        // 3. Handle binary audio response
-        // 4. Return AudioResponse with base64 encoded audio
-
         $mapper = new TextToSpeechRequestMapper($request);
-        $mapper->toPayload();
 
-        throw new \Exception('ElevenLabs text-to-speech not yet implemented');
+        $response = $this->client->post('text-to-speech/'.$request->voice(), $mapper->toPayload());
+
+        if (! $response->successful()) {
+            throw new Exception('Failed to generate audio: '.$response->body());
+        }
+
+        $audioContent = $response->body();
+        $base64Audio = base64_encode($audioContent);
+
+        return new AudioResponse(
+            audio: new GeneratedAudio(
+                base64: $base64Audio,
+            ),
+        );
     }
 
     public function handleSpeechToText(SpeechToTextRequest $request): TextResponse
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = $this
             ->client
             ->attach(

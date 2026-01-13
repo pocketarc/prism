@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Prism\Prism\Providers\Anthropic\Maps;
 
 use Illuminate\Support\Arr;
+use InvalidArgumentException;
 use Prism\Prism\Enums\Citations\CitationSourcePositionType;
 use Prism\Prism\Enums\Citations\CitationSourceType;
 use Prism\Prism\ValueObjects\Citation;
@@ -22,7 +23,7 @@ class CitationsMapper
         }
 
         $citations = array_map(
-            fn (array $citationData): Citation => self::mapCitationFromAnthropic($citationData),
+            self::mapCitationFromAnthropic(...),
             $contentBlock['citations'] ?? []
         );
 
@@ -40,7 +41,7 @@ class CitationsMapper
     public static function mapToAnthropic(MessagePartWithCitations $messagePartWithCitations): array
     {
         $citations = array_map(
-            fn (Citation $citation): array => self::mapCitationToAnthropic($citation),
+            self::mapCitationToAnthropic(...),
             $messagePartWithCitations->citations
         );
 
@@ -83,7 +84,7 @@ class CitationsMapper
         return match ($anthropicType) {
             'web_search_result_location' => CitationSourceType::Url,
             'page_location', 'char_location', 'content_block_location' => CitationSourceType::Document,
-            default => throw new \InvalidArgumentException("Unknown citation type: {$anthropicType}"),
+            default => throw new InvalidArgumentException("Unknown citation type: {$anthropicType}"),
         };
     }
 

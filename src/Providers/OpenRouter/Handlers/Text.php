@@ -5,16 +5,14 @@ declare(strict_types=1);
 namespace Prism\Prism\Providers\OpenRouter\Handlers;
 
 use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Support\Arr;
 use Prism\Prism\Concerns\CallsTools;
 use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Exceptions\PrismException;
+use Prism\Prism\Providers\OpenRouter\Concerns\BuildsRequestOptions;
 use Prism\Prism\Providers\OpenRouter\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\OpenRouter\Concerns\ValidatesResponses;
 use Prism\Prism\Providers\OpenRouter\Maps\MessageMap;
 use Prism\Prism\Providers\OpenRouter\Maps\ToolCallMap;
-use Prism\Prism\Providers\OpenRouter\Maps\ToolChoiceMap;
-use Prism\Prism\Providers\OpenRouter\Maps\ToolMap;
 use Prism\Prism\Text\Request;
 use Prism\Prism\Text\Response as TextResponse;
 use Prism\Prism\Text\ResponseBuilder;
@@ -27,6 +25,7 @@ use Prism\Prism\ValueObjects\Usage;
 
 class Text
 {
+    use BuildsRequestOptions;
     use CallsTools;
     use MapsFinishReason;
     use ValidatesResponses;
@@ -54,7 +53,7 @@ class Text
 
         return match ($this->mapFinishReason($data)) {
             FinishReason::ToolCalls => $this->handleToolCalls($data, $request),
-            FinishReason::Stop => $this->handleStop($data, $request),
+            FinishReason::Stop, FinishReason::Length => $this->handleStop($data, $request),
             default => throw new PrismException('OpenRouter: unknown finish reason'),
         };
     }
@@ -100,20 +99,14 @@ class Text
      */
     protected function sendRequest(Request $request): array
     {
+        /** @var \Illuminate\Http\Client\Response $response */
         $response = $this->client->post(
             'chat/completions',
             array_merge([
                 'model' => $request->model(),
                 'messages' => (new MessageMap($request->messages(), $request->systemPrompts()))(),
                 'max_tokens' => $request->maxTokens(),
-            ], Arr::whereNotNull([
-                'temperature' => $request->temperature(),
-                'top_p' => $request->topP(),
-                'reasoning' => $request->providerOptions('reasoning') ?? null,
-                'tools' => ToolMap::map($request->tools()),
-                'tool_choice' => ToolChoiceMap::map($request->toolChoice()),
-                'provider' => $request->providerOptions('provider') ?? null,
-            ]))
+            ], $this->buildRequestOptions($request))
         );
 
         return $response->json();
@@ -130,6 +123,7 @@ class Text
             finishReason: $this->mapFinishReason($data),
             toolCalls: ToolCallMap::map(data_get($data, 'choices.0.message.tool_calls', [])),
             toolResults: $toolResults,
+            providerToolCalls: [],
             usage: new Usage(
                 data_get($data, 'usage.prompt_tokens'),
                 data_get($data, 'usage.completion_tokens'),

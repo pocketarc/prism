@@ -63,7 +63,7 @@ class UserMessage implements Message
     }
 
     /**
-     * Note: Prism currently only supports Documents with Anthropic.
+     * Note: Prism currently only supports Documents with Anthropic and OpenRouter.
      *
      * @return Document[]
      */
@@ -81,6 +81,16 @@ class UserMessage implements Message
     {
         return collect($this->additionalContent)
             ->where(fn ($part): bool => $part instanceof Audio)
+            ->toArray();
+    }
+
+    /**
+     * @return Video[]
+     */
+    public function videos(): array
+    {
+        return collect($this->additionalContent)
+            ->where(fn ($part): bool => $part instanceof Video)
             ->toArray();
     }
 }

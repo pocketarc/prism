@@ -59,6 +59,8 @@ it('maps user messages with images from path', function (): void {
 
     $mappedMessage = $messageMap();
 
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
     expect(data_get($mappedMessage, '0.content.1.type'))
         ->toBe('input_image');
     expect(data_get($mappedMessage, '0.content.1.image_url'))
@@ -78,6 +80,8 @@ it('maps user messages with images from base64', function (): void {
     );
 
     $mappedMessage = $messageMap();
+
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
     expect(data_get($mappedMessage, '0.content.1.type'))
         ->toBe('input_image');
@@ -99,6 +103,8 @@ it('maps user messages with images from url', function (): void {
 
     $mappedMessage = $messageMap();
 
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
     expect(data_get($mappedMessage, '0.content.1.type'))
         ->toBe('input_image');
     expect(data_get($mappedMessage, '0.content.1.image_url'))
@@ -116,6 +122,8 @@ it('maps user messages with images from file id', function (): void {
     );
 
     $mappedMessage = $messageMap();
+
+    expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
     expect(data_get($mappedMessage, '0.content.1.type'))
         ->toBe('input_image');
@@ -235,7 +243,7 @@ it('maps system prompt', function (): void {
 
 describe('documents', function (): void {
     it('maps user messages with pdf documents', function (): void {
-        $messageMap = new \Prism\Prism\Providers\OpenAi\Maps\MessageMap(
+        $messageMap = new MessageMap(
             messages: [
                 new UserMessage('Here is the document', [
                     Document::fromBase64(base64_encode(file_get_contents('tests/Fixtures/test-pdf.pdf')), 'application/pdf'),
@@ -246,6 +254,8 @@ describe('documents', function (): void {
 
         $mappedMessage = $messageMap();
 
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('input_file')
             ->and(data_get($mappedMessage, '0.content.1.file_data'))
@@ -253,7 +263,7 @@ describe('documents', function (): void {
     });
 
     it('maps user messages with file urls', function (): void {
-        $messageMap = new \Prism\Prism\Providers\OpenAi\Maps\MessageMap(
+        $messageMap = new MessageMap(
             messages: [
                 new UserMessage('Here is the document', [
                     Document::fromUrl('https://example.com/test-pdf.pdf'),
@@ -264,6 +274,8 @@ describe('documents', function (): void {
 
         $mappedMessage = $messageMap();
 
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('input_file')
             ->and(data_get($mappedMessage, '0.content.1.file_url'))
@@ -271,7 +283,7 @@ describe('documents', function (): void {
     });
 
     it('maps previously uploaded files', function (): void {
-        $messageMap = new \Prism\Prism\Providers\OpenAi\Maps\MessageMap(
+        $messageMap = new MessageMap(
             messages: [
                 new UserMessage('Here is the document', [
                     Document::fromFileId('previously-uploaded-file-id'),
@@ -281,6 +293,8 @@ describe('documents', function (): void {
         );
 
         $mappedMessage = $messageMap();
+
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('input_file')

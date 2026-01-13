@@ -7,6 +7,7 @@ namespace Prism\Prism\Providers\Anthropic\Handlers;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
+use InvalidArgumentException;
 use Prism\Prism\Concerns\CallsTools;
 use Prism\Prism\Contracts\PrismRequest;
 use Prism\Prism\Enums\FinishReason;
@@ -74,7 +75,7 @@ class Text
     public static function buildHttpRequestPayload(PrismRequest $request): array
     {
         if (! $request->is(TextRequest::class)) {
-            throw new \InvalidArgumentException('Request must be an instance of '.TextRequest::class);
+            throw new InvalidArgumentException('Request must be an instance of '.TextRequest::class);
         }
 
         return Arr::whereNotNull([
@@ -89,7 +90,7 @@ class Text
                         : config('prism.anthropic.default_thinking_budget', 1024),
                 ]
                 : null,
-            'max_tokens' => $request->maxTokens(),
+            'max_tokens' => $request->maxTokens() ?? 64000,
             'temperature' => $request->temperature(),
             'top_p' => $request->topP(),
             'tools' => static::buildTools($request) ?: null,
@@ -136,6 +137,7 @@ class Text
             finishReason: $this->tempResponse->finishReason,
             toolCalls: $this->tempResponse->toolCalls,
             toolResults: $toolResults,
+            providerToolCalls: [],
             usage: $this->tempResponse->usage,
             meta: $this->tempResponse->meta,
             messages: $this->request->messages(),
@@ -188,6 +190,7 @@ class Text
             fn (ProviderTool $tool): array => [
                 'type' => $tool->type,
                 'name' => $tool->name,
+                ...$tool->options,
             ],
             $request->providerTools()
         );

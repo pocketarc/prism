@@ -9,8 +9,11 @@ use Illuminate\Support\Facades\Http;
 use Prism\Prism\Enums\Provider;
 use Prism\Prism\Enums\StructuredMode;
 use Prism\Prism\Exceptions\PrismException;
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\Schema\AnyOfSchema;
+use Prism\Prism\Schema\ArraySchema;
 use Prism\Prism\Schema\BooleanSchema;
+use Prism\Prism\Schema\NumberSchema;
 use Prism\Prism\Schema\ObjectSchema;
 use Prism\Prism\Schema\StringSchema;
 use Tests\Fixtures\FixtureResponse;
@@ -386,6 +389,78 @@ it('uses meta to define strict mode as null', function (): void {
     });
 });
 
+it('uses meta to set service_tier', function (): void {
+    FixtureResponse::fakeResponseSequence(
+        'v1/responses',
+        'openai/structured-structured-mode'
+    );
+
+    $serviceTier = 'priority';
+
+    $schema = new ObjectSchema(
+        'output',
+        'the output object',
+        [
+            new StringSchema('weather', 'The weather forecast'),
+            new StringSchema('game_time', 'The tigers game time'),
+            new BooleanSchema('coat_required', 'whether a coat is required'),
+        ],
+        ['weather', 'game_time', 'coat_required']
+    );
+
+    Prism::structured()
+        ->withSchema($schema)
+        ->using(Provider::OpenAI, 'gpt-4o')
+        ->withPrompt('What time is the game we talked about and should I wear a coat?')
+        ->withProviderOptions([
+            'service_tier' => $serviceTier,
+        ])
+        ->asStructured();
+
+    Http::assertSent(function (Request $request) use ($serviceTier): true {
+        $body = json_decode($request->body(), true);
+
+        expect(data_get($body, 'service_tier'))->toBe($serviceTier);
+
+        return true;
+    });
+});
+
+it('filters service_tier if null', function (): void {
+    FixtureResponse::fakeResponseSequence(
+        'v1/responses',
+        'openai/structured-structured-mode'
+    );
+
+    $schema = new ObjectSchema(
+        'output',
+        'the output object',
+        [
+            new StringSchema('weather', 'The weather forecast'),
+            new StringSchema('game_time', 'The tigers game time'),
+            new BooleanSchema('coat_required', 'whether a coat is required'),
+        ],
+        ['weather', 'game_time', 'coat_required']
+    );
+
+    Prism::structured()
+        ->withSchema($schema)
+        ->using(Provider::OpenAI, 'gpt-4o')
+        ->withPrompt('What time is the game we talked about and should I wear a coat?')
+        ->withProviderOptions([
+            'service_tier' => null,
+        ])
+        ->asStructured();
+
+    Http::assertSent(function (Request $request): true {
+        $body = json_decode($request->body(), true);
+
+        expect($body)->not()->toHaveKey('service_tier');
+
+        return true;
+    });
+});
+
 it('sends reasoning effort when defined', function (): void {
     FixtureResponse::fakeResponseSequence('v1/responses', 'openai/structured-reasoning-effort');
 
@@ -412,4 +487,131 @@ it('sends reasoning effort when defined', function (): void {
         ->asStructured();
 
     Http::assertSent(fn (Request $request): bool => $request->data()['reasoning']['effort'] === 'low');
+});
+
+it('supports AnyOfSchema in structured output', function (): void {
+    FixtureResponse::fakeResponseSequence('v1/responses', 'openai/anyof-structured');
+
+    // Create a schema where a field can accept multiple types
+    $flexibleContentSchema = new AnyOfSchema(
+        schemas: [
+            new ObjectSchema(
+                name: 'text_content',
+                description: 'Text-based content',
+                properties: [
+                    new StringSchema('type', 'Content type identifier'),
+                    new StringSchema('text', 'The text content'),
+                    new NumberSchema('word_count', 'Number of words in the text'),
+                ],
+                requiredFields: ['type', 'text']
+            ),
+            new ObjectSchema(
+                name: 'media_content',
+                description: 'Media-based content',
+                properties: [
+                    new StringSchema('type', 'Content type identifier'),
+                    new StringSchema('url', 'Media URL'),
+                    new StringSchema('format', 'Media format (jpg, mp4, etc.)'),
+                    new BooleanSchema('is_public', 'Whether the media is publicly accessible'),
+                ],
+                requiredFields: ['type', 'url', 'format']
+            ),
+        ],
+        name: 'content',
+        description: 'Content that can be either text or media'
+    );
+
+    $rootSchema = new ObjectSchema(
+        name: 'post',
+        description: 'A social media post with flexible content',
+        properties: [
+            new StringSchema('title', 'Post title'),
+            new ArraySchema(
+                name: 'items',
+                description: 'List of content items in the post',
+                items: $flexibleContentSchema
+            ),
+        ],
+        requiredFields: ['title', 'items']
+    );
+
+    $response = Prism::structured()
+        ->using(Provider::OpenAI, 'gpt-4o')
+        ->withSchema($rootSchema)
+        ->withPrompt('Create a social media post about AI with mixed content types')
+        ->asStructured();
+
+    expect($response->structured)->toBeArray();
+    expect($response->structured)->toHaveKeys(['title', 'items']);
+    expect($response->structured['title'])->toBeString();
+    expect($response->structured['items'])->toBeArray();
+});
+
+it('supports nullable AnyOfSchema in structured output', function (): void {
+    FixtureResponse::fakeResponseSequence('v1/responses', 'openai/nullable-anyof-structured');
+
+    $flexibleValueSchema = new AnyOfSchema(
+        schemas: [
+            new StringSchema('text', 'A text value'),
+            new NumberSchema('number', 'A numeric value'),
+            new BooleanSchema('flag', 'A boolean value'),
+        ],
+        name: 'flexible_value',
+        description: 'A value that can be string, number, boolean, or null',
+        nullable: true
+    );
+
+    $rootSchema = new ObjectSchema(
+        name: 'config',
+        description: 'Configuration object with flexible values',
+        properties: [
+            new StringSchema('name', 'Configuration name'),
+            $flexibleValueSchema,
+        ],
+        requiredFields: ['name', 'flexible_value']
+    );
+
+    $response = Prism::structured()
+        ->using(Provider::OpenAI, 'gpt-4o')
+        ->withSchema($rootSchema)
+        ->withPrompt('Create a config with a flexible value that could be null')
+        ->asStructured();
+
+    expect($response->structured)->toBeArray();
+    expect($response->structured)->toHaveKeys(['name', 'flexible_value']);
+});
+
+it('passes store parameter when specified', function (): void {
+    FixtureResponse::fakeResponseSequence(
+        'v1/responses',
+        'openai/structured-structured-mode'
+    );
+
+    $schema = new ObjectSchema(
+        'output',
+        'the output object',
+        [
+            new StringSchema('query', 'Search internal documents'),
+        ],
+        ['query']
+    );
+
+    $store = false;
+
+    Prism::structured()
+        ->using(Provider::OpenAI, 'gpt-4o')
+        ->withSchema($schema)
+        ->withPrompt('What was the revenue in Q3?')
+        ->withProviderOptions([
+            'store' => $store,
+        ])
+        ->asStructured();
+
+    Http::assertSent(function (Request $request) use ($store): true {
+        $body = json_decode($request->body(), true);
+
+        expect(data_get($body, 'store'))->toBe($store);
+
+        return true;
+    });
 });

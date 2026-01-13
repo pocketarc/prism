@@ -26,8 +26,8 @@ class CitationMapper
         $groundingChunks = data_get($candidate, 'groundingMetadata.groundingChunks', []);
 
         foreach ($groundingSupports as $groundingSupport) {
-            $startIndex = data_get($groundingSupport, 'segment.startIndex');
-            $endIndex = data_get($groundingSupport, 'segment.endIndex');
+            $startIndex = data_get($groundingSupport, 'segment.startIndex') ?? 0;
+            $endIndex = data_get($groundingSupport, 'segment.endIndex') ?? strlen((string) $originalOutput);
 
             if ($startIndex - 1 > $lastWrittenCharacter) {
                 $messageParts[] = new MessagePartWithCitations(
@@ -54,17 +54,41 @@ class CitationMapper
 
     /**
      * @param  array<int>  $groundingChunkIndices
-     * @param  array<array<string,string>>  $groundingChunks
+     * @param  array<int, array<string, mixed>>  $groundingChunks
      * @return Citation[]
      */
     protected static function mapGroundingChunkIndicesToCitations(array $groundingChunkIndices, array $groundingChunks): array
     {
         return array_map(
-            fn (int $value): Citation => new Citation(
-                sourceType: CitationSourceType::Url,
-                source: data_get($groundingChunks, "{$value}.web.uri"),
-                sourceTitle: data_get($groundingChunks, "{$value}.web.title"),
-            ),
+            function (int $value) use ($groundingChunks): Citation {
+                $chunk = $groundingChunks[$value] ?? [];
+
+                if (isset($chunk['web']) && is_array($chunk['web'])) {
+                    $web = $chunk['web'];
+
+                    return new Citation(
+                        sourceType: CitationSourceType::Url,
+                        source: is_string($web['uri'] ?? null) ? $web['uri'] : '',
+                        sourceTitle: is_string($web['title'] ?? null) ? $web['title'] : null,
+                    );
+                }
+
+                if (isset($chunk['retrievedContext']) && is_array($chunk['retrievedContext'])) {
+                    $context = $chunk['retrievedContext'];
+
+                    return new Citation(
+                        sourceType: CitationSourceType::Url,
+                        source: is_string($context['fileSearchStore'] ?? null) ? $context['fileSearchStore'] : '',
+                        sourceTitle: is_string($context['title'] ?? null) ? $context['title'] : null,
+                    );
+                }
+
+                return new Citation(
+                    sourceType: CitationSourceType::Url,
+                    source: '',
+                    sourceTitle: null,
+                );
+            },
             $groundingChunkIndices
         );
     }

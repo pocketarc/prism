@@ -7,7 +7,7 @@ Need your AI assistant to check the weather, search a database, or call your API
 Think of tools as special functions that your AI assistant can use when it needs to perform specific tasks. Just like how Laravel's facades provide a clean interface to complex functionality, Prism tools give your AI a clean way to interact with external services and data sources.
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 use Prism\Prism\Facades\Tool;
 
@@ -32,7 +32,7 @@ $response = Prism::text()
 Prism defaults to allowing a single step. To use Tools, you'll need to increase this using `withMaxSteps`:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 
 Prism::text()
@@ -285,11 +285,31 @@ class SearchTool extends Tool
 }
 ```
 
+You can use `Tool::make($className)` if you need to resolve the dependencies:
+
+
+```php
+use App\Tools\SearchTool;
+use Prism\Prism\Facades\Tool;
+
+$tool = Tool::make(SearchTool::class);
+```
+
+## Using Laravel MCP Tools
+You can use existing [Laravel MCP](https://github.com/laravel/mcp) Tools in Prism directly, without using the Laravel MCP Server:
+
+```php
+use App\Mcp\Tools\CurrentWeatherTool;
+use Prism\Prism\Facades\Tool;
+
+$tool = Tool::make(CurrentWeatherTool::class);
+```
+
 ## Tool Choice Options
 
 You can control how the AI uses tools with the `withToolChoice` method:
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 use Prism\Prism\Enums\ToolChoice;
 
@@ -314,7 +334,7 @@ $prism = Prism::text()
 When your AI uses tools, you can inspect the results and see how it arrived at its answer:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 
 $response = Prism::text()
@@ -349,6 +369,145 @@ foreach ($response->steps as $step) {
 }
 ```
 
+## Tool Artifacts
+
+Sometimes tools need to produce binary data like images, audio, or files alongside their text response. Prism's Artifact system lets you return rich data without bloating the LLM's context window.
+
+### The Problem with Binary Data
+
+Normally, everything your tool returns goes to the LLM as context. This works fine for text, but for binary data like generated images:
+- Base64-encoded images would waste tokens
+- The LLM can't meaningfully process raw binary data
+- Large payloads slow down responses
+
+### The Solution: ToolOutput with Artifacts
+
+Instead of returning a string, return a `ToolOutput` that separates the text result (for the LLM) from artifacts (for your application):
+
+```php
+use Prism\Prism\Facades\Tool;
+use Prism\Prism\ValueObjects\Artifact;
+use Prism\Prism\ValueObjects\ToolOutput;
+
+$imageTool = Tool::as('generate_image')
+    ->for('Generate an image from a prompt')
+    ->withStringParameter('prompt', 'The image prompt')
+    ->using(function (string $prompt): ToolOutput {
+        // Your image generation logic
+        $imageData = $this->imageGenerator->generate($prompt);
+
+        return new ToolOutput(
+            result: json_encode(['status' => 'success', 'description' => $prompt]),
+            artifacts: [
+                Artifact::fromRawContent(
+                    content: $imageData,
+                    mimeType: 'image/png',
+                    metadata: ['width' => 1024, 'height' => 1024],
+                    id: 'generated-image-001',
+                ),
+            ],
+        );
+    });
+```
+
+The `result` goes to the LLM. The `artifacts` travel through the streaming system to your application.
+
+### Creating Artifacts
+
+The `Artifact` class represents binary or structured data:
+
+```php
+use Prism\Prism\ValueObjects\Artifact;
+
+// From raw content (automatically base64 encoded)
+$artifact = Artifact::fromRawContent(
+    content: file_get_contents('image.png'),
+    mimeType: 'image/png',
+    metadata: ['width' => 800, 'height' => 600],
+    id: 'my-image-id',
+);
+
+// From already base64-encoded data
+$artifact = new Artifact(
+    data: base64_encode($rawData),
+    mimeType: 'application/pdf',
+    metadata: ['pages' => 5],
+    id: 'report-001',
+);
+
+// Get raw content back
+$rawContent = $artifact->rawContent();
+```
+
+### Handling Artifacts in Streams
+
+Artifacts are emitted as `ArtifactEvent` through all streaming methods:
+
+```php
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\Streaming\Events\ArtifactEvent;
+
+// Using asStream()
+foreach (Prism::text()->withTools([$imageTool])->asStream() as $event) {
+    if ($event instanceof ArtifactEvent) {
+        $artifact = $event->artifact;
+        file_put_contents(
+            "output/{$event->toolName}_{$artifact->id}.png",
+            $artifact->rawContent()
+        );
+    }
+}
+
+// Using asDataStreamResponse() with callback
+Prism::text()
+    ->withTools([$imageTool])
+    ->asDataStreamResponse(function ($pendingRequest, $events) use ($conversationId) {
+        foreach ($events as $event) {
+            if ($event instanceof ArtifactEvent) {
+                Attachment::create([
+                    'conversation_id' => $conversationId,
+                    'data' => $event->artifact->rawContent(),
+                    'mime_type' => $event->artifact->mimeType,
+                ]);
+            }
+        }
+    });
+```
+
+### Non-Streaming Mode
+
+In non-streaming mode, artifacts are available on the `ToolResult` objects:
+
+```php
+$response = Prism::text()
+    ->withTools([$imageTool])
+    ->withMaxSteps(3)
+    ->withPrompt('Generate an image of a sunset')
+    ->asText();
+
+foreach ($response->toolResults as $result) {
+    if ($result->hasArtifacts()) {
+        foreach ($result->artifacts as $artifact) {
+            // Process artifact
+            file_put_contents(
+                "output/{$artifact->id}.png",
+                $artifact->rawContent()
+            );
+        }
+    }
+}
+```
+
+### Backward Compatibility
+
+Tools returning `string` continue to work unchanged. The `ToolOutput` return type is optional:
+
+```php
+// Both are valid:
+->using(fn (string $query): string => "Result: {$query}");
+->using(fn (string $query): ToolOutput => new ToolOutput(result: "Result: {$query}"));
+```
+
 ## Provider Tools
 
 In addition to custom tools that you define, Prism supports **provider tools** - built-in capabilities offered directly by AI providers. These are specialized tools that leverage the provider's own infrastructure and services.
@@ -370,7 +529,7 @@ In addition to custom tools that you define, Prism supports **provider tools** -
 Provider tools are added to your requests using the `withProviderTools()` method with `ProviderTool` objects:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\ValueObjects\ProviderTool;
 
 $response = Prism::text()
@@ -407,7 +566,7 @@ new ProviderTool(
 You can use both provider tools and custom tools in the same request:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\ValueObjects\ProviderTool;
 use Prism\Prism\Facades\Tool;
 
@@ -428,4 +587,70 @@ $response = Prism::text()
         new ProviderTool(type: 'code_execution_20250522', name: 'code_execution')
     ])
     ->asText();
-``` 
+```
+
+## Using Tools with Structured Output
+
+Tools can be combined with structured output to gather data and return formatted results in a single request. This pattern is useful when you need the AI to call functions to fetch information, then format the results according to a specific schema.
+
+### Basic Example
+
+```php
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\Schema\ObjectSchema;
+use Prism\Prism\Schema\StringSchema;
+use Prism\Prism\Facades\Tool;
+
+$schema = new ObjectSchema(
+    name: 'weather_analysis',
+    description: 'Analysis of weather conditions',
+    properties: [
+        new StringSchema('summary', 'Summary of the weather'),
+        new StringSchema('recommendation', 'Recommendation based on weather'),
+    ],
+    requiredFields: ['summary', 'recommendation']
+);
+
+$weatherTool = Tool::as('get_weather')
+    ->for('Get current weather for a location')
+    ->withStringParameter('location', 'The city and state')
+    ->using(fn (string $location): string => "Weather in {$location}: 72°F, sunny");
+
+$response = Prism::structured()
+    ->using('anthropic', 'claude-3-5-sonnet-latest')
+    ->withSchema($schema)
+    ->withTools([$weatherTool])
+    ->withMaxSteps(3)
+    ->withPrompt('What is the weather in San Francisco and should I wear a coat?')
+    ->asStructured();
+
+// Response contains both structured data and tool execution details
+dump($response->structured);
+```
+
+> [!IMPORTANT]
+> When combining tools with structured output, you must set `maxSteps` to at least 2. The AI needs multiple steps to call tools and then return structured output.
+
+### Response Structure
+
+Responses include both the structured output and tool execution details:
+
+```php
+// Final structured data
+$data = $response->structured;
+
+// All tool calls made during execution
+foreach ($response->toolCalls as $toolCall) {
+    echo "Called: {$toolCall->name}\n";
+}
+
+// Tool execution results
+foreach ($response->toolResults as $result) {
+    echo "Result: {$result->result}\n";
+}
+```
+
+> [!NOTE]
+> Only the final step contains structured data. Intermediate steps contain tool calls and results, but no structured output.
+
+For complete documentation on combining tools with structured output, see the [Structured Output](./structured-output.md#combining-structured-output-with-tools) documentation.

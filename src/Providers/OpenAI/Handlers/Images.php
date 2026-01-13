@@ -6,6 +6,7 @@ namespace Prism\Prism\Providers\OpenAI\Handlers;
 
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response as ClientResponse;
+use InvalidArgumentException;
 use Prism\Prism\Images\Request;
 use Prism\Prism\Images\Response;
 use Prism\Prism\Images\ResponseBuilder;
@@ -13,6 +14,7 @@ use Prism\Prism\Providers\OpenAI\Concerns\ProcessRateLimits;
 use Prism\Prism\Providers\OpenAI\Concerns\ValidatesResponse;
 use Prism\Prism\Providers\OpenAI\Maps\ImageRequestMap;
 use Prism\Prism\ValueObjects\GeneratedImage;
+use Prism\Prism\ValueObjects\Media\Image;
 use Prism\Prism\ValueObjects\Meta;
 use Prism\Prism\ValueObjects\Usage;
 
@@ -51,32 +53,49 @@ class Images
 
     protected function sendRequest(Request $request): ClientResponse
     {
-        if ($request->providerOptions('image')) {
+        if ($request->additionalContent()) {
             return $this->sendImageEditRequest($request);
         }
 
-        return $this->client->post('images/generations', ImageRequestMap::map($request));
+        /** @var ClientResponse $response */
+        $response = $this->client->post('images/generations', ImageRequestMap::map($request));
+
+        return $response;
     }
 
     protected function sendImageEditRequest(Request $request): ClientResponse
     {
-        $this
-            ->client
-            ->attach(
-                'image',
-                $request->providerOptions('image'),
-            );
+        /** @var Image $image */
+        foreach ($request->additionalContent() as $index => $image) {
+            $this
+                ->client
+                ->attach(
+                    'image[]',
+                    $image->resource(),
+                    $image->filename() ?: "image-{$index}",
+                    ['Content-Type' => $image->mimeType()],
+                );
+        }
 
-        if ($request->providerOptions('mask')) {
+        if ($mask = $request->providerOptions('mask')) {
+            if (! $mask instanceof Image) {
+                throw new InvalidArgumentException('Mask must be an instance of Image value object');
+            }
+
             $this
                 ->client
                 ->attach(
                     'mask',
-                    $request->providerOptions('mask'),
+                    $mask->resource(),
                 );
         }
 
-        return $this->client->post('images/edits', ImageRequestMap::map($request));
+        /** @var ClientResponse $response */
+        $response = $this
+            ->client
+            ->post('images/edits', ImageRequestMap::map($request));
+
+        return $response;
     }
 
     /**

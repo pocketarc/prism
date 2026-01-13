@@ -7,22 +7,31 @@ namespace Prism\Prism\Providers\OpenRouter\Handlers;
 use Generator;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
 use Prism\Prism\Concerns\CallsTools;
-use Prism\Prism\Enums\ChunkType;
 use Prism\Prism\Enums\FinishReason;
-use Prism\Prism\Exceptions\PrismChunkDecodeException;
+use Prism\Prism\Exceptions\PrismStreamDecodeException;
+use Prism\Prism\Providers\OpenRouter\Concerns\BuildsRequestOptions;
 use Prism\Prism\Providers\OpenRouter\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\OpenRouter\Concerns\ValidatesResponses;
 use Prism\Prism\Providers\OpenRouter\Maps\MessageMap;
-use Prism\Prism\Providers\OpenRouter\Maps\ToolChoiceMap;
-use Prism\Prism\Providers\OpenRouter\Maps\ToolMap;
-use Prism\Prism\Text\Chunk;
+use Prism\Prism\Streaming\EventID;
+use Prism\Prism\Streaming\Events\ArtifactEvent;
+use Prism\Prism\Streaming\Events\StreamEndEvent;
+use Prism\Prism\Streaming\Events\StreamEvent;
+use Prism\Prism\Streaming\Events\StreamStartEvent;
+use Prism\Prism\Streaming\Events\TextCompleteEvent;
+use Prism\Prism\Streaming\Events\TextDeltaEvent;
+use Prism\Prism\Streaming\Events\TextStartEvent;
+use Prism\Prism\Streaming\Events\ThinkingCompleteEvent;
+use Prism\Prism\Streaming\Events\ThinkingEvent;
+use Prism\Prism\Streaming\Events\ThinkingStartEvent;
+use Prism\Prism\Streaming\Events\ToolCallEvent;
+use Prism\Prism\Streaming\Events\ToolResultEvent;
+use Prism\Prism\Streaming\StreamState;
 use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
-use Prism\Prism\ValueObjects\Meta;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\Usage;
 use Psr\Http\Message\StreamInterface;
@@ -30,14 +39,20 @@ use Throwable;
 
 class Stream
 {
+    use BuildsRequestOptions;
     use CallsTools;
     use MapsFinishReason;
     use ValidatesResponses;
 
-    public function __construct(protected PendingRequest $client) {}
+    protected StreamState $state;
+
+    public function __construct(protected PendingRequest $client)
+    {
+        $this->state = new StreamState;
+    }
 
     /**
-     * @return Generator<Chunk>
+     * @return Generator<StreamEvent>
      */
     public function handle(Request $request): Generator
     {
@@ -47,15 +62,16 @@ class Stream
     }
 
     /**
-     * @return Generator<Chunk>
+     * @return Generator<StreamEvent>
      */
     protected function processStream(Response $response, Request $request, int $depth = 0): Generator
     {
+        if ($depth === 0) {
+            $this->state->reset();
+        }
+
         $text = '';
         $toolCalls = [];
-        $finishReason = null;
-        $usage = null;
-        $meta = null;
 
         while (! $response->getBody()->eof()) {
             $data = $this->parseNextDataLine($response->getBody());
@@ -64,34 +80,94 @@ class Stream
                 continue;
             }
 
-            if (isset($data['id']) && ! $meta instanceof \Prism\Prism\ValueObjects\Meta) {
-                $meta = new Meta(
-                    id: $data['id'],
-                    model: $data['model'] ?? null,
-                );
+            if ($this->state->shouldEmitStreamStart()) {
+                $this->state
+                    ->withMessageId(EventID::generate('msg'))
+                    ->markStreamStarted();
 
-                yield new Chunk(
-                    text: '',
-                    finishReason: null,
-                    meta: $meta,
-                    chunkType: ChunkType::Meta,
+                yield new StreamStartEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    model: $data['model'] ?? $request->model(),
+                    provider: 'openrouter'
                 );
             }
 
             if ($this->hasToolCalls($data)) {
                 $toolCalls = $this->extractToolCalls($data, $toolCalls);
 
+                $finishReason = data_get($data, 'choices.0.finish_reason');
+                if ($finishReason !== null && $this->mapFinishReason($data) === FinishReason::ToolCalls) {
+                    if ($this->state->hasTextStarted() && $text !== '') {
+                        yield new TextCompleteEvent(
+                            id: EventID::generate(),
+                            timestamp: time(),
+                            messageId: $this->state->messageId()
+                        );
+                    }
+
+                    if ($this->state->hasThinkingStarted() && $this->state->currentThinking() !== '') {
+                        yield new ThinkingCompleteEvent(
+                            id: EventID::generate(),
+                            timestamp: time(),
+                            reasoningId: $this->state->reasoningId()
+                        );
+                    }
+
+                    yield from $this->handleToolCalls($request, $text, $toolCalls, $depth);
+
+                    return;
+                }
+
                 continue;
+            }
+
+            $finishReasonValue = data_get($data, 'choices.0.finish_reason');
+            if ($finishReasonValue !== null && $this->mapFinishReason($data) === FinishReason::ToolCalls) {
+                if ($this->state->hasTextStarted() && $text !== '') {
+                    yield new TextCompleteEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        messageId: $this->state->messageId()
+                    );
+                }
+
+                if ($this->state->hasThinkingStarted() && $this->state->currentThinking() !== '') {
+                    yield new ThinkingCompleteEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        reasoningId: $this->state->reasoningId()
+                    );
+                }
+
+                yield from $this->handleToolCalls($request, $text, $toolCalls, $depth);
+
+                return;
             }
 
             if ($this->hasReasoningDelta($data)) {
                 $reasoningDelta = $this->extractReasoningDelta($data);
 
                 if ($reasoningDelta !== '') {
-                    yield new Chunk(
-                        text: $reasoningDelta,
-                        finishReason: null,
-                        chunkType: ChunkType::Thinking
+                    if ($this->state->shouldEmitThinkingStart()) {
+                        $this->state
+                            ->withReasoningId(EventID::generate('reasoning'))
+                            ->markThinkingStarted();
+
+                        yield new ThinkingStartEvent(
+                            id: EventID::generate(),
+                            timestamp: time(),
+                            reasoningId: $this->state->reasoningId()
+                        );
+                    }
+
+                    $this->state->appendThinking($reasoningDelta);
+
+                    yield new ThinkingEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        delta: $reasoningDelta,
+                        reasoningId: $this->state->reasoningId()
                     );
                 }
 
@@ -100,52 +176,61 @@ class Stream
 
             $content = $this->extractContentDelta($data);
             if ($content !== '') {
+                if ($this->state->shouldEmitTextStart()) {
+                    $this->state->markTextStarted();
+
+                    yield new TextStartEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        messageId: $this->state->messageId()
+                    );
+                }
+
                 $text .= $content;
 
-                yield new Chunk(
-                    text: $content,
-                    finishReason: null
+                yield new TextDeltaEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    delta: $content,
+                    messageId: $this->state->messageId()
                 );
             }
 
-            $currentFinishReason = $this->extractFinishReason($data);
-            if ($currentFinishReason !== FinishReason::Unknown) {
-                $finishReason = $currentFinishReason;
-            }
+            $rawFinishReason = data_get($data, 'choices.0.finish_reason');
+            if ($rawFinishReason !== null) {
+                $finishReason = $this->mapFinishReason($data);
 
-            if (isset($data['usage'])) {
-                $usage = new Usage(
-                    promptTokens: data_get($data, 'usage.prompt_tokens'),
-                    completionTokens: data_get($data, 'usage.completion_tokens'),
-                    cacheReadInputTokens: data_get($data, 'usage.prompt_tokens_details.cached_tokens'),
-                    thoughtTokens: data_get($data, 'usage.completion_tokens_details.reasoning_tokens')
-                );
-            }
+                if ($this->state->hasTextStarted() && $text !== '') {
+                    yield new TextCompleteEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        messageId: $this->state->messageId()
+                    );
+                }
 
-            if (isset($data['choices'][0]['finish_reason'])) {
+                if ($this->state->hasThinkingStarted() && $this->state->currentThinking() !== '') {
+                    yield new ThinkingCompleteEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        reasoningId: $this->state->reasoningId()
+                    );
+                }
+
+                $this->state->withFinishReason($finishReason);
+
+                $usage = $this->extractUsage($data);
                 if ($usage instanceof \Prism\Prism\ValueObjects\Usage) {
-                    yield new Chunk(
-                        text: '',
-                        chunkType: ChunkType::Meta,
-                        usage: $usage,
-                    );
+                    $this->state->addUsage($usage);
                 }
-
-                if ($finishReason instanceof \Prism\Prism\Enums\FinishReason) {
-                    yield new Chunk(
-                        text: '',
-                        finishReason: $finishReason,
-                        chunkType: ChunkType::Meta,
-                    );
-                }
-
-                break;
             }
         }
 
-        if ($toolCalls !== []) {
-            yield from $this->handleToolCalls($request, $text, $toolCalls, $depth);
-        }
+        yield new StreamEndEvent(
+            id: EventID::generate(),
+            timestamp: time(),
+            finishReason: $this->state->finishReason() ?? FinishReason::Stop,
+            usage: $this->state->usage()
+        );
     }
 
     /**
@@ -168,7 +253,7 @@ class Stream
         try {
             return json_decode($line, true, flags: JSON_THROW_ON_ERROR);
         } catch (Throwable $e) {
-            throw new PrismChunkDecodeException('OpenRouter', $e);
+            throw new PrismStreamDecodeException('OpenRouter', $e);
         }
     }
 
@@ -177,7 +262,7 @@ class Stream
      */
     protected function hasToolCalls(array $data): bool
     {
-        return isset($data['choices'][0]['delta']['tool_calls']);
+        return ! empty($data['choices'][0]['delta']['tool_calls']);
     }
 
     /**
@@ -256,7 +341,7 @@ class Stream
 
     /**
      * @param  array<int, array<string, mixed>>  $toolCalls
-     * @return Generator<Chunk>
+     * @return Generator<StreamEvent>
      */
     protected function handleToolCalls(
         Request $request,
@@ -264,24 +349,45 @@ class Stream
         array $toolCalls,
         int $depth
     ): Generator {
-        $toolCalls = $this->mapToolCalls($toolCalls);
+        $mappedToolCalls = $this->mapToolCalls($toolCalls);
 
-        yield new Chunk(
-            text: '',
-            toolCalls: $toolCalls,
-            chunkType: ChunkType::ToolCall,
-        );
+        foreach ($mappedToolCalls as $toolCall) {
+            yield new ToolCallEvent(
+                id: EventID::generate(),
+                timestamp: time(),
+                toolCall: $toolCall,
+                messageId: $this->state->messageId()
+            );
+        }
 
-        $toolResults = $this->callTools($request->tools(), $toolCalls);
+        $toolResults = $this->callTools($request->tools(), $mappedToolCalls);
 
-        yield new Chunk(
-            text: '',
-            toolResults: $toolResults,
-            chunkType: ChunkType::ToolResult,
-        );
+        foreach ($toolResults as $result) {
+            yield new ToolResultEvent(
+                id: EventID::generate(),
+                timestamp: time(),
+                toolResult: $result,
+                messageId: $this->state->messageId()
+            );
 
-        $request->addMessage(new AssistantMessage($text, $toolCalls));
+            foreach ($result->artifacts as $artifact) {
+                yield new ArtifactEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    artifact: $artifact,
+                    toolCallId: $result->toolCallId,
+                    toolName: $result->toolName,
+                    messageId: $this->state->messageId(),
+                );
+            }
+        }
+
+        $request->addMessage(new AssistantMessage($text, $mappedToolCalls));
         $request->addMessage(new ToolResultMessage($toolResults));
+
+        $this->state
+            ->resetTextState()
+            ->withMessageId(EventID::generate('msg'));
 
         $depth++;
 
@@ -299,29 +405,32 @@ class Stream
      */
     protected function mapToolCalls(array $toolCalls): array
     {
-        return array_map(function (array $toolCall): ToolCall {
-            $arguments = data_get($toolCall, 'function.arguments', '');
+        return collect($toolCalls)
+            ->map(function ($toolCall): ToolCall {
+                $arguments = data_get($toolCall, 'function.arguments', '');
 
-            // Try to decode JSON arguments
-            if (is_string($arguments) && $arguments !== '') {
-                try {
-                    $arguments = json_decode($arguments, true, flags: JSON_THROW_ON_ERROR);
-                } catch (Throwable) {
-                    // Keep as string if JSON decode fails
+                if (is_string($arguments) && $arguments !== '') {
+                    try {
+                        $parsedArguments = json_decode($arguments, true, flags: JSON_THROW_ON_ERROR);
+                        $arguments = $parsedArguments;
+                    } catch (Throwable) {
+                        $arguments = ['raw' => $arguments];
+                    }
                 }
-            }
 
-            return new ToolCall(
-                id: data_get($toolCall, 'id'),
-                name: data_get($toolCall, 'function.name'),
-                arguments: $arguments,
-            );
-        }, $toolCalls);
+                return new ToolCall(
+                    data_get($toolCall, 'id'),
+                    data_get($toolCall, 'function.name'),
+                    $arguments,
+                );
+            })
+            ->toArray();
     }
 
     protected function sendRequest(Request $request): Response
     {
-        return $this
+        /** @var Response $response */
+        $response = $this
             ->client
             ->withOptions(['stream' => true])
             ->post(
@@ -331,16 +440,12 @@ class Stream
                     'model' => $request->model(),
                     'messages' => (new MessageMap($request->messages(), $request->systemPrompts()))(),
                     'max_tokens' => $request->maxTokens(),
-                ], Arr::whereNotNull([
-                    'temperature' => $request->temperature(),
-                    'top_p' => $request->topP(),
-                    'reasoning' => $request->providerOptions('reasoning') ?? null,
-                    'tools' => ToolMap::map($request->tools()),
-                    'tool_choice' => ToolChoiceMap::map($request->toolChoice()),
+                ], $this->buildRequestOptions($request, [
                     'stream_options' => ['include_usage' => true],
-                    'provider' => $request->providerOptions('provider') ?? null,
                 ]))
             );
+
+        return $response;
     }
 
     protected function readLine(StreamInterface $stream): string
@@ -362,5 +467,24 @@ class Stream
         }
 
         return $buffer;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    protected function extractUsage(array $data): ?Usage
+    {
+        $usage = data_get($data, 'usage');
+
+        if (! $usage) {
+            return null;
+        }
+
+        return new Usage(
+            promptTokens: (int) data_get($usage, 'prompt_tokens', 0),
+            completionTokens: (int) data_get($usage, 'completion_tokens', 0),
+            cacheReadInputTokens: (int) data_get($usage, 'prompt_tokens_details.cached_tokens', 0),
+            thoughtTokens: (int) data_get($usage, 'completion_tokens_details.reasoning_tokens', 0)
+        );
     }
 }

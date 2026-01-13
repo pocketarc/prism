@@ -39,6 +39,8 @@ describe('Anthropic user message mapping', function (): void {
             ]),
         ]);
 
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('image');
         expect(data_get($mappedMessage, '0.content.1.source.type'))
@@ -55,6 +57,8 @@ describe('Anthropic user message mapping', function (): void {
                 Image::fromBase64(base64_encode(file_get_contents('tests/Fixtures/diamond.png')), 'image/png'),
             ]),
         ]);
+
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('image');
@@ -73,6 +77,8 @@ describe('Anthropic user message mapping', function (): void {
             ]),
         ]);
 
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('image');
         expect(data_get($mappedMessage, '0.content.1.source.type'))
@@ -88,6 +94,8 @@ describe('Anthropic user message mapping', function (): void {
             ]),
         ]);
 
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('document');
         expect(data_get($mappedMessage, '0.content.1.source.type'))
@@ -102,6 +110,8 @@ describe('Anthropic user message mapping', function (): void {
                 Document::fromLocalPath('tests/Fixtures/test-pdf.pdf'),
             ]),
         ]);
+
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('document');
@@ -120,6 +130,8 @@ describe('Anthropic user message mapping', function (): void {
             ]),
         ]);
 
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('document');
         expect(data_get($mappedMessage, '0.content.1.source.type'))
@@ -136,6 +148,8 @@ describe('Anthropic user message mapping', function (): void {
                 Document::fromLocalPath('tests/Fixtures/test-text.txt'),
             ]),
         ]);
+
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('document');
@@ -154,6 +168,8 @@ describe('Anthropic user message mapping', function (): void {
             ]),
         ]);
 
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
+
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('document');
         expect(data_get($mappedMessage, '0.content.1.source.type'))
@@ -170,6 +186,8 @@ describe('Anthropic user message mapping', function (): void {
                 Document::fromText('Hello world!'),
             ]),
         ]);
+
+        expect(data_get($mappedMessage, '0.content'))->toHaveCount(2);
 
         expect(data_get($mappedMessage, '0.content.1.type'))
             ->toBe('document');
@@ -481,6 +499,85 @@ describe('Anthropic cache mapping', function (): void {
         'ephemeral',
         AnthropicCacheType::Ephemeral,
     ]);
+
+    it('sets the cache ttl on a UserMessage if cacheTtl providerOptions is set on message', function (): void {
+        expect(MessageMap::map([
+            (new UserMessage(content: 'Who are you?'))->withProviderOptions([
+                'cacheType' => 'ephemeral',
+                'cacheTtl' => '1h',
+            ]),
+        ]))->toBe([[
+            'role' => 'user',
+            'content' => [
+                [
+                    'type' => 'text',
+                    'text' => 'Who are you?',
+                    'cache_control' => ['type' => 'ephemeral', 'ttl' => '1h'],
+                ],
+            ],
+        ]]);
+    });
+
+    it('sets the cache ttl on an AssistantMessage if cacheTtl providerOptions is set on message', function (): void {
+        expect(MessageMap::map([
+            (new AssistantMessage(content: 'Who are you?'))->withProviderOptions([
+                'cacheType' => 'ephemeral',
+                'cacheTtl' => '5m',
+            ]),
+        ]))->toBe([[
+            'role' => 'assistant',
+            'content' => [
+                [
+                    'type' => 'text',
+                    'text' => 'Who are you?',
+                    'cache_control' => ['type' => AnthropicCacheType::Ephemeral->value, 'ttl' => '5m'],
+                ],
+            ],
+        ]]);
+    });
+
+    it('sets the cache ttl on a SystemMessage if cacheTtl providerOptions is set on message', function (): void {
+        expect(MessageMap::mapSystemMessages([
+            (new SystemMessage(content: 'Who are you?'))->withProviderOptions([
+                'cacheType' => 'ephemeral',
+                'cacheTtl' => '1h',
+            ]),
+        ]))->toBe([
+            [
+                'type' => 'text',
+                'text' => 'Who are you?',
+                'cache_control' => ['type' => AnthropicCacheType::Ephemeral->value, 'ttl' => '1h'],
+            ],
+        ]);
+    });
+
+    it('sets the cache ttl on a ToolResultMessage if cacheTtl providerOptions is set on message', function (): void {
+        expect(MessageMap::map([
+            (new ToolResultMessage([
+                new ToolResult(
+                    'tool_1234',
+                    'weather',
+                    ['city' => 'Dallas'],
+                    'It is 72°F and sunny in Dallas'
+                ),
+            ]))->withProviderOptions([
+                'cacheType' => 'ephemeral',
+                'cacheTtl' => '5m',
+            ]),
+        ]))->toBe([
+            [
+                'role' => 'user',
+                'content' => [
+                    [
+                        'type' => 'tool_result',
+                        'tool_use_id' => 'tool_1234',
+                        'content' => 'It is 72°F and sunny in Dallas',
+                        'cache_control' => ['type' => 'ephemeral', 'ttl' => '5m'],
+                    ],
+                ],
+            ],
+        ]);
+    });
 });
 
 describe('Anthropic citations mapping', function (): void {
@@ -519,5 +616,83 @@ describe('Anthropic citations mapping', function (): void {
         expect($mapped[0]['content'][0]['citations'][0])->toHaveKey('document_title', 'Test Document');
         expect($mapped[0]['content'][0]['citations'][0])->toHaveKey('start_char_index', 10);
         expect($mapped[0]['content'][0]['citations'][0])->toHaveKey('end_char_index', 30);
+    });
+});
+
+describe('Anthropic provider tool calls mapping', function (): void {
+    it('maps assistant message with provider tool calls', function (): void {
+        expect(MessageMap::map([
+            new AssistantMessage(
+                content: 'I have used a provider tool.',
+                additionalContent: [
+                    'provider_tool_calls' => [
+                        [
+                            'type' => 'server_tool_use',
+                            'id' => 'srvtoolu_xyz789',
+                            'name' => 'web_search',
+                            'input' => '{"query":"london weather"}',
+                        ],
+                    ],
+                ]
+            ),
+        ]))->toBe([
+            [
+                'role' => 'assistant',
+                'content' => [
+                    [
+                        'type' => 'text',
+                        'text' => 'I have used a provider tool.',
+                    ],
+                    [
+                        'type' => 'server_tool_use',
+                        'id' => 'srvtoolu_xyz789',
+                        'name' => 'web_search',
+                        'input' => [
+                            'query' => 'london weather',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+    });
+
+    it('maps assistant message with web search tool results', function (): void {
+        expect(MessageMap::map([
+            new AssistantMessage(
+                content: 'Here are the web search results.',
+                additionalContent: [
+                    'provider_tool_results' => [
+                        [
+                            'type' => 'web_search_tool_result',
+                            'tool_use_id' => 'srvtoolu_xyz789',
+                            'content' => [
+                                'results' => [
+                                    ['type' => 'web_search_result', 'title' => 'London Weather Today', 'url' => 'https://weather.com/london'],
+                                ],
+                            ],
+                        ],
+                    ],
+                ]
+            ),
+        ]))->toBe([
+            [
+                'role' => 'assistant',
+                'content' => [
+                    [
+                        'type' => 'text',
+                        'text' => 'Here are the web search results.',
+                    ],
+                    [
+                        'type' => 'web_search_tool_result',
+                        'tool_use_id' => 'srvtoolu_xyz789',
+                        'content' => [
+                            'results' => [
+                                ['type' => 'web_search_result', 'title' => 'London Weather Today', 'url' => 'https://weather.com/london'],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
     });
 });

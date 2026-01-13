@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Prism\Prism\Providers\Gemini\Maps;
 
 use Illuminate\Support\Arr;
-use InvalidArgumentException;
 use Prism\Prism\Images\Request;
 
 class ImageRequestMap
@@ -24,37 +23,42 @@ class ImageRequestMap
     {
         $providerOptions = $request->providerOptions();
 
-        $parts = [
-            [
-                'text' => $request->prompt(),
-            ],
-        ];
+        $parts = [];
 
-        if (isset($providerOptions['image'])) {
-            $resource = $providerOptions['image'];
-            $imageContent = is_resource($resource) ? stream_get_contents($resource) : false;
-            if (! $imageContent) {
-                throw new InvalidArgumentException('Image must be a valid resource.');
-            }
-
+        // Add images first (Gemini best practice for multimodal prompts)
+        foreach ($request->additionalContent() as $image) {
             $parts[] = [
-                'inline_data' => Arr::whereNotNull([
-                    'mime_type' => $providerOptions['image_mime_type'] ?? null,
-                    'data' => base64_encode($imageContent),
-                ]),
+                'inlineData' => [
+                    'mimeType' => $image->mimeType(),
+                    'data' => $image->base64(),
+                ],
             ];
         }
 
-        return [
+        // Add text prompt after images
+        $parts[] = [
+            'text' => $request->prompt(),
+        ];
+
+        $result = [
             'contents' => [
                 [
                     'parts' => $parts,
                 ],
             ],
             'generationConfig' => [
-                'responseModalities' => ['TEXT', 'IMAGE'],
+                'responseModalities' => $providerOptions['response_modalities'] ?? ['TEXT', 'IMAGE'],
+                'imageConfig' => [
+                    'aspectRatio' => $providerOptions['aspect_ratio'] ?? null,
+                ],
             ],
         ];
+
+        if (isset($providerOptions['safety_settings'])) {
+            $result['safetySettings'] = $providerOptions['safety_settings'];
+        }
+
+        return $result;
     }
 
     /** @return array<string, mixed> */

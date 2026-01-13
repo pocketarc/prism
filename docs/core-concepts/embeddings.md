@@ -1,13 +1,13 @@
 # Embeddings
 
-Transform your text into powerful vector representations! Embeddings let you add semantic search, recommendation systems, and other advanced natural language features to your applications.
+Transform your content into powerful vector representations! Embeddings let you add semantic search, recommendation systems, and other advanced features to your applications - whether you're working with text or images.
 
 ## Quick Start
 
 Here's how to generate an embedding with just a few lines of code:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 
 $response = Prism::embeddings()
@@ -27,7 +27,7 @@ echo $response->usage->tokens;
 You can generate multiple embeddings at once with all providers that support embeddings, other than Gemini:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 
 $response = Prism::embeddings()
@@ -60,7 +60,7 @@ You've got two convenient ways to feed text into the embeddings generator:
 ### Direct Text Input
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 
 $response = Prism::embeddings()
@@ -74,7 +74,7 @@ $response = Prism::embeddings()
 Need to analyze a larger document? No problem:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 
 $response = Prism::embeddings()
@@ -86,12 +86,77 @@ $response = Prism::embeddings()
 > [!NOTE]
 > Make sure your file exists and is readable. The generator will throw a helpful `PrismException` if there's any issue accessing the file.
 
+## Image Embeddings
+
+Some providers support image embeddings, enabling powerful use cases like visual similarity search, cross-modal retrieval, and multimodal applications. Prism makes it easy to generate embeddings from images using the same fluent API.
+
+> [!IMPORTANT]
+> Image embeddings require a provider and model that supports image input (such as CLIP-based models or multimodal embedding models like BGE-VL). Check your provider's documentation to confirm image embedding support.
+
+### Single Image
+
+Generate an embedding from a single image:
+
+```php
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\ValueObjects\Media\Image;
+
+$response = Prism::embeddings()
+    ->using('provider', 'model')
+    ->fromImage(Image::fromLocalPath('/path/to/product.jpg'))
+    ->asEmbeddings();
+
+$embedding = $response->embeddings[0]->embedding;
+```
+
+### Multiple Images
+
+Process multiple images in a single request:
+
+```php
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\ValueObjects\Media\Image;
+
+$response = Prism::embeddings()
+    ->using('provider', 'model')
+    ->fromImages([
+        Image::fromLocalPath('/path/to/image1.jpg'),
+        Image::fromUrl('https://example.com/image2.png'),
+    ])
+    ->asEmbeddings();
+
+foreach ($response->embeddings as $embedding) {
+    // Process each image embedding
+    $vector = $embedding->embedding;
+}
+```
+
+### Multimodal: Text + Image
+
+Combine text and images for cross-modal search scenarios. This is particularly useful for applications like "find products similar to this image that match this description":
+
+```php
+use Prism\Prism\Facades\Prism;
+use Prism\Prism\ValueObjects\Media\Image;
+
+$response = Prism::embeddings()
+    ->using('provider', 'model')
+    ->fromInput('Find similar products in red')
+    ->fromImage(Image::fromBase64($productImage, 'image/png'))
+    ->asEmbeddings();
+```
+
+You can chain `fromImage()` and `fromInput()` in any order - Prism handles both gracefully.
+
+> [!TIP]
+> The `Image` class supports multiple input sources: `fromLocalPath()`, `fromUrl()`, `fromBase64()`, `fromStoragePath()`, and `fromRawContent()`. See the [Images documentation](/input-modalities/images.html) for details.
+
 ## Common Settings
 
 Just like with text generation, you can fine-tune your embeddings requests:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 
 $response = Prism::embeddings()
@@ -130,7 +195,7 @@ $tokenCount = $response->usage->tokens;
 Always handle potential errors gracefully:
 
 ```php
-use Prism\Prism\Prism;
+use Prism\Prism\Facades\Prism;
 use Prism\Prism\Enums\Provider;
 use Prism\Prism\Exceptions\PrismException;
 
@@ -146,7 +211,7 @@ try {
 }
 ```
 
-## Pro Tips 🌟
+## Pro Tips
 
 **Vector Storage**: Consider using a vector database like Milvus, Qdrant, or pgvector to store and query your embeddings efficiently.
 

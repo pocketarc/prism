@@ -15,6 +15,12 @@ use Prism\Prism\ValueObjects\Messages\SystemMessage;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Tests\TestDoubles\TestProvider;
 
+enum TestModel: string
+{
+    case Gpt4 = 'gpt-4';
+    case Gpt35 = 'gpt-3.5-turbo';
+}
+
 beforeEach(function (): void {
     $this->pendingRequest = new PendingRequest;
     $this->provider = new TestProvider;
@@ -225,6 +231,45 @@ test('it can set view prompt', function (): void {
         ->and($generated->messages()[0])->toBeInstanceOf(UserMessage::class);
 });
 
+test('it filters livewire morph markers from view prompts', function (): void {
+    $view = Mockery::mock(View::class);
+    $view->shouldReceive('render')->andReturn('<!--[if BLOCK]><![endif]-->Hello AI<!--[if ENDBLOCK]><![endif]-->');
+
+    $request = $this->pendingRequest
+        ->using(Provider::OpenAI, 'gpt-4')
+        ->withPrompt($view);
+
+    $generated = $request->toRequest();
+
+    expect($generated->prompt())->toBe('Hello AI')
+        ->and($generated->messages()[0])->toBeInstanceOf(UserMessage::class);
+});
+
+test('it preserves legitimate html comments in view prompts', function (): void {
+    $view = Mockery::mock(View::class);
+    $view->shouldReceive('render')->andReturn('<!-- This is a comment -->Hello AI');
+
+    $request = $this->pendingRequest
+        ->using(Provider::OpenAI, 'gpt-4')
+        ->withPrompt($view);
+
+    $generated = $request->toRequest();
+
+    expect($generated->prompt())->toBe('<!-- This is a comment -->Hello AI')
+        ->and($generated->messages()[0])->toBeInstanceOf(UserMessage::class);
+});
+
+test('it does not filter string prompts', function (): void {
+    $request = $this->pendingRequest
+        ->using(Provider::OpenAI, 'gpt-4')
+        ->withPrompt('<!--[if BLOCK]><![endif]-->Hello AI<!--[if ENDBLOCK]><![endif]-->');
+
+    $generated = $request->toRequest();
+
+    expect($generated->prompt())->toBe('<!--[if BLOCK]><![endif]-->Hello AI<!--[if ENDBLOCK]><![endif]-->')
+        ->and($generated->messages()[0])->toBeInstanceOf(UserMessage::class);
+});
+
 test('it can set string system prompt', function (): void {
     $request = $this->pendingRequest
         ->using(Provider::OpenAI, 'gpt-4')
@@ -248,6 +293,45 @@ test('it can set view system prompt', function (): void {
 
     expect($generated->systemPrompts()[0]->content)
         ->toBe('System instruction');
+});
+
+test('it filters livewire morph markers from view system prompts', function (): void {
+    $view = Mockery::mock(View::class);
+    $view->shouldReceive('render')->andReturn('<!--[if BLOCK]><![endif]-->System instruction<!--[if ENDBLOCK]><![endif]-->');
+
+    $request = $this->pendingRequest
+        ->using(Provider::OpenAI, 'gpt-4')
+        ->withSystemPrompt($view);
+
+    $generated = $request->toRequest();
+
+    expect($generated->systemPrompts()[0]->content)
+        ->toBe('System instruction');
+});
+
+test('it preserves legitimate html comments in view system prompts', function (): void {
+    $view = Mockery::mock(View::class);
+    $view->shouldReceive('render')->andReturn('<!-- Important -->System instruction');
+
+    $request = $this->pendingRequest
+        ->using(Provider::OpenAI, 'gpt-4')
+        ->withSystemPrompt($view);
+
+    $generated = $request->toRequest();
+
+    expect($generated->systemPrompts()[0]->content)
+        ->toBe('<!-- Important -->System instruction');
+});
+
+test('it does not filter string system prompts', function (): void {
+    $request = $this->pendingRequest
+        ->using(Provider::OpenAI, 'gpt-4')
+        ->withSystemPrompt('<!--[if BLOCK]><![endif]-->System instruction<!--[if ENDBLOCK]><![endif]-->');
+
+    $generated = $request->toRequest();
+
+    expect($generated->systemPrompts()[0]->content)
+        ->toBe('<!--[if BLOCK]><![endif]-->System instruction<!--[if ENDBLOCK]><![endif]-->');
 });
 
 test('it can set messages', function (): void {
@@ -352,4 +436,15 @@ test('withPrompt maintains backward compatibility without additional content', f
     expect($generated->prompt())->toBe('Hello AI')
         ->and($generated->messages()[0])->toBeInstanceOf(UserMessage::class)
         ->and($generated->messages()[0]->additionalContent)->toHaveCount(1); // Only Text
+});
+
+test('it can configure the model using a backed enum', function (): void {
+    $modelEnum = TestModel::Gpt4;
+
+    $request = $this->pendingRequest
+        ->using(Provider::OpenAI, $modelEnum);
+
+    $generated = $request->toRequest();
+
+    expect($generated->model())->toBe('gpt-4');
 });
