@@ -193,6 +193,19 @@ it('extracts reasoning from non-streaming response', function (): void {
     expect($response->usage->thoughtTokens)->toBe(18);
 });
 
+it('reports cached and cache-write input tokens', function (): void {
+    FixtureResponse::fakeResponseSequence('v1/chat/completions', 'openrouter/generate-text-with-cached-tokens');
+
+    $response = Prism::text()
+        ->using(Provider::OpenRouter, 'anthropic/claude-sonnet-4')
+        ->withPrompt('Who are you?')
+        ->asText();
+
+    expect($response->usage->promptTokens)->toBe(2048);
+    expect($response->usage->cacheReadInputTokens)->toBe(2000);
+    expect($response->usage->cacheWriteInputTokens)->toBe(40);
+});
+
 it('forwards advanced provider options to openrouter', function (): void {
     FixtureResponse::fakeResponseSequence('v1/chat/completions', 'openrouter/generate-text-with-a-prompt');
 

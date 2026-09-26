@@ -55,6 +55,55 @@ it('returns structured output', function (): void {
     expect($response->usage->completionTokens)->toBe(26);
 });
 
+it('reports cached and cache-write input tokens', function (): void {
+    FixtureResponse::fakeResponseSequence('v1/chat/completions', 'openrouter/structured-with-cached-tokens');
+
+    $schema = new ObjectSchema(
+        'output',
+        'the output object',
+        [
+            new StringSchema('weather', 'The weather forecast'),
+            new StringSchema('game_time', 'The tigers game time'),
+            new BooleanSchema('coat_required', 'whether a coat is required'),
+        ],
+        ['weather', 'game_time', 'coat_required']
+    );
+
+    $response = Prism::structured()
+        ->withSchema($schema)
+        ->using(Provider::OpenRouter, 'anthropic/claude-sonnet-4')
+        ->withPrompt('What time is the tigers game today and should I wear a coat?')
+        ->asStructured();
+
+    expect($response->usage->promptTokens)->toBe(1187);
+    expect($response->usage->cacheReadInputTokens)->toBe(1000);
+    expect($response->usage->cacheWriteInputTokens)->toBe(150);
+});
+
+it('leaves cache token counts null when the response has none', function (): void {
+    FixtureResponse::fakeResponseSequence('v1/chat/completions', 'openrouter/structured');
+
+    $schema = new ObjectSchema(
+        'output',
+        'the output object',
+        [
+            new StringSchema('weather', 'The weather forecast'),
+            new StringSchema('game_time', 'The tigers game time'),
+            new BooleanSchema('coat_required', 'whether a coat is required'),
+        ],
+        ['weather', 'game_time', 'coat_required']
+    );
+
+    $response = Prism::structured()
+        ->withSchema($schema)
+        ->using(Provider::OpenRouter, 'openai/gpt-4-turbo')
+        ->withPrompt('What time is the tigers game today and should I wear a coat?')
+        ->asStructured();
+
+    expect($response->usage->cacheReadInputTokens)->toBeNull();
+    expect($response->usage->cacheWriteInputTokens)->toBeNull();
+});
+
 it('handles missing usage data in response', function (): void {
     FixtureResponse::fakeResponseSequence('v1/chat/completions', 'openrouter/structured-missing-usage');
 
