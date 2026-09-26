@@ -12,6 +12,7 @@ use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Exceptions\PrismStructuredDecodingException;
 use Prism\Prism\Providers\DeepSeek\Maps\ToolCallMap;
 use Prism\Prism\Providers\OpenRouter\Concerns\BuildsRequestOptions;
+use Prism\Prism\Providers\OpenRouter\Concerns\ExtractsCacheTokens;
 use Prism\Prism\Providers\OpenRouter\Concerns\ExtractsReasoning;
 use Prism\Prism\Providers\OpenRouter\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\OpenRouter\Concerns\ValidatesResponses;
@@ -30,6 +31,7 @@ class Structured
 {
     use BuildsRequestOptions;
     use CallsTools;
+    use ExtractsCacheTokens;
     use ExtractsReasoning;
     use MapsFinishReason;
     use ValidatesResponses;
@@ -158,6 +160,8 @@ class Structured
             usage: new Usage(
                 promptTokens: (int) data_get($data, 'usage.prompt_tokens', 0),
                 completionTokens: (int) data_get($data, 'usage.completion_tokens', 0),
+                cacheWriteInputTokens: $this->extractCacheWriteTokens($data),
+                cacheReadInputTokens: $this->extractCacheReadTokens($data),
                 thoughtTokens: $this->extractThoughtTokens($data),
             ),
             meta: new Meta(
